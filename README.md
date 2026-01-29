@@ -26,7 +26,15 @@ Remember to de-normalize the output of the model, through this function:
 ```bash
 parameters = test_dataset.normalizer.inverse_transform_targets(parameters_normalized.cpu().numpy())
 ``` 
-If you run ```inference.py``` you should get the output:
+If you run ```inference.py```, and if you have the test dataset saved in this path: 
+```bash
+BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+
+test_imgs_root = os.path.join(BASE_DIR, 'data/data_v2/test/imgs/')
+targets_test_path = os.path.join(BASE_DIR, 'data/data_v2/test/sampled_vars.parquet')
+```  
+
+you should get the output:
 ```bash
 [INFO] Using device: cuda
 [INFO] [TEST] Loading normalizer...
