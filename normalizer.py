@@ -56,6 +56,12 @@ class Normalizer:
         
         logging.info(f"Normalizer saved to {save_dir}")
     
+    def load_from_stats(self, mean, std):
+        self.target_scaler.mean_ = np.array(mean, dtype=np.float64)
+        self.target_scaler.scale_ = np.array(std, dtype=np.float64)
+        self.target_scaler.var_ = self.target_scaler.scale_ ** 2
+        self.is_fitted = True
+    
     @classmethod
     def load(cls, save_dir):
         normalizer = cls()
