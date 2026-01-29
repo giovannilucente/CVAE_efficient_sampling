@@ -1,4 +1,4 @@
-*Efficient sampling through a Hierarchical Conditional Variational Autoencoder (HCVAE)
+#Efficient sampling through a Hierarchical Conditional Variational Autoencoder (HCVAE)
 
 The weights are in the weight folder. 
 You can check how to generate samples with the trained model in the ```inference.py``` script:
