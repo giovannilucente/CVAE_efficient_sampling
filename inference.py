@@ -1,10 +1,10 @@
 import os
 import torch
 from PIL import Image
-from cvae.model.hcvae import HierarchicalCVAE, reconstruction_kld
-from cvae.model.imgs_cond_dataset import CVAEDataset
+from .hcvae import HierarchicalCVAE, reconstruction_kld
+from .imgs_cond_dataset import CVAEDataset
 from torchvision import transforms
-from normalizer import Normalizer
+from .normalizer import Normalizer
 
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")

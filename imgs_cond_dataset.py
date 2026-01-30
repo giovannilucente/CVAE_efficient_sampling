@@ -8,7 +8,7 @@ import logging
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from tqdm import tqdm
-from normalizer import Normalizer
+from .normalizer import Normalizer
 
 logging.basicConfig(level=logging.INFO, 
                     format="[%(levelname)s] %(message)s",
