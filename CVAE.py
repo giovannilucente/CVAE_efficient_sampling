@@ -15,7 +15,6 @@ class CVAE_Efficient():
         self.img_dim = 128
         self.frame_size = 3
         self.num_workers = 16  # for data loading
-        self.log_every = 10
         
         self.model = self.initialize_model(weights_path=model_path, frame_size=self.frame_size, img_dim=self.img_dim, device=device)
         self.imgs_transforms = self.initialize_transforms(img_dim=self.img_dim)
