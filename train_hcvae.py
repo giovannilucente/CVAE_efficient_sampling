@@ -1,14 +1,12 @@
 import os
 import torch
 import numpy as np
-from cvae.model.model import CVAE, cvae_loss_function
-from cvae.model.hcvae import HierarchicalCVAE, reconstruction_kld
+from hcvae import HierarchicalCVAE, reconstruction_kld
 from tqdm import tqdm
 import pandas as pd
 from torch.utils.tensorboard import SummaryWriter
 from cvae.utils.beta_annealer import BetaAnnealer, CyclicalAnnealer
-from cvae.model.imgs_cond_dataset import CVAEDataset
-from cvae.model.mask_background import MaskBackground
+from imgs_cond_dataset import CVAEDataset
 from torchvision import transforms
 from torch.optim.lr_scheduler import LambdaLR
 import sys
@@ -25,7 +23,7 @@ logging.info(f"Using device: {device}")
 
 batch_size = 64
 img_features = 64
-img_dim = 128
+img_dim = 256
 z_dim = 32
 x_dim = 3
 c_dim = 6 + img_features  # states + img features
@@ -89,7 +87,7 @@ logging.info("Data Ready!")
 lr = 1e-4
 num_epochs = 20
 stall_epochs = 0
-model_name = "hcvae_opt"
+model_name = "hcvae_opt_256"
 history = 3
 
 kl_beta = 0.0  # KL divergence weight
