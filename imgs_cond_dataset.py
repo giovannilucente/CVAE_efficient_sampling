@@ -8,7 +8,8 @@ import logging
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from tqdm import tqdm
-from .normalizer import Normalizer
+from normalizer import Normalizer
+from functools import lru_cache
 
 logging.basicConfig(level=logging.INFO, 
                     format="[%(levelname)s] %(message)s",
@@ -48,39 +49,23 @@ class CVAEDataset(Dataset):
         # Build sequential mapping per index
         self.index_info = list(zip(self.scenarios, self.time_steps))
 
-        # Preload all unique images
-        unique_images = list(set(self.index_info))
-        logging.info(f"Preloading {len(unique_images)} unique images using {num_workers} workers...")
-
-        self.image_cache = {}
-        self._preload_images_parallel(unique_images, num_workers)
-        logging.info(f"Preloading complete. Cache contains {len(self.image_cache)} images.")
-
 
     # -----------------------
     # Image loading helpers
     # -----------------------
+    @lru_cache(maxsize=5000)   # adjust based on RAM
     def _load_single_image(self, scenario, time_step):
+        """Load one image lazily (cached)."""
+        img_path = os.path.join(self.image_root, scenario, f"{time_step}.png")
         try:
-            img_path = os.path.join(self.image_root, scenario, f"{time_step}.png")
             img = Image.open(img_path).convert("L")
             if self.image_transform:
                 img = self.image_transform(img)
-            return (scenario, time_step), img
+            return img
         except Exception as e:
-            logging.error(f"Error loading {scenario}/{time_step}.png: {e}")
-            return (scenario, time_step), None
-
-    def _preload_images_parallel(self, unique_images, num_workers):
-        with ThreadPoolExecutor(max_workers=num_workers) as executor:
-            futures = {
-                executor.submit(self._load_single_image, s, t): (s, t)
-                for s, t in unique_images
-            }
-            for future in tqdm(as_completed(futures), total=len(futures), desc="Loading images"):
-                key, img = future.result()
-                if img is not None:
-                    self.image_cache[key] = img
+            logging.error(f"Error loading {img_path}: {e}")
+            # Return a zero tensor fallback
+            return torch.zeros(1, 256, 256)
 
 
     # -----------------------
@@ -121,8 +106,7 @@ class CVAEDataset(Dataset):
 
     def _get_image_seq(self, idx):
         """
-        Returns a single tensor shaped (C*T, H, W):
-        Concatenates history frames along the channel dimension.
+        Returns (C*T, H, W) image tensor for the history frames.
         """
         scenario, time_step = self.index_info[idx]
         seq = []
@@ -130,17 +114,10 @@ class CVAEDataset(Dataset):
         for h in range(self.history):
             step = time_step - (self.history - 1 - h)
 
-            # Clamp to earliest frame of scenario
             if step < 0:
                 step = 0
 
-            key = (scenario, step)
-            if key in self.image_cache:
-                img = self.image_cache[key]
-            else:
-                fallback_step = max(0, min(step, time_step))
-                img = self.image_cache[(scenario, fallback_step)]
-
+            img = self._load_single_image(scenario, step)
             seq.append(img)
 
         return torch.cat(seq, dim=0)     # (C*T, H, W)
@@ -155,7 +132,7 @@ if __name__ == "__main__":
 
     from torchvision import transforms
     
-    img_dim = 128
+    img_dim = 256
 
     BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
     targets_train_path = os.path.join(BASE_DIR, 'data/data_v2/train/sampled_vars.parquet')
