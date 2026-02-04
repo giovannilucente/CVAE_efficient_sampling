@@ -25,7 +25,7 @@ def kl_gaussian(mu_q, logvar_q, mu_p, logvar_p):
     )
 
     # Sum over latent dimension (dim=2), mean over sequence dimension (dim=1)
-    kl = kl.sum(dim=2).mean(dim=1)
+    kl = kl.sum(dim=2).sum(dim=1)
     
     return kl.mean()     
 
@@ -63,11 +63,11 @@ class ImageTokenizer(nn.Module):
 
 
 class VectorTokenizer(nn.Module):
-    def __init__(self, hidden_dim=64, seq_len=8):
+    def __init__(self, input_dim=3, hidden_dim=64, seq_len=8):
         super().__init__()
         self.seq_len = seq_len
         self.mlp = nn.Sequential(
-            nn.Linear(3, hidden_dim * seq_len),  
+            nn.Linear(input_dim, hidden_dim * seq_len),  
             nn.ReLU()
         )
         
@@ -225,7 +225,7 @@ class HierarchicalCVAE(nn.Module):
         self.cond4 = ImageTokenizer(img_channels=img_channels, img_size=img_size, hidden_dim=hidden_dim*8, patch_size=self.patch_size)
 
         # Input tokenizer
-        self.input_tokenizer = VectorTokenizer(hidden_dim=hidden_dim, seq_len=self.seq_len)
+        self.input_tokenizer = VectorTokenizer(input_dim=input_dim, hidden_dim=hidden_dim, seq_len=self.seq_len)
 
         # Encoder
         self.enc1 = EncoderLevel(hidden_dim,    hidden_dim,   attn=attn)       
