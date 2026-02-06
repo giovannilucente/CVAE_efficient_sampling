@@ -12,7 +12,7 @@ class CVAE_Efficient():
         self.model_path = model_path
 
         self.batch_size = 1024
-        self.img_dim = 128
+        self.img_dim = 256
         self.frame_size = 3
         self.num_workers = 16  # for data loading
         
