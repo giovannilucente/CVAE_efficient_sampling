@@ -4,7 +4,8 @@ from PIL import Image
 from tqdm import tqdm
 import torch.nn.functional as F
 from cvae.model.hcvae import HierarchicalCVAE, reconstruction_kld
-from cvae.model.model import CVAE 
+from cvae.model.conditional_vae import CVAE 
+from cvae.model.attn_cvae import attnCVAE
 from cvae.model.imgs_cond_dataset import CVAEDataset
 from torchvision import transforms
 from normalizer import Normalizer
@@ -29,10 +30,14 @@ targets_test_path = os.path.join(BASE_DIR, 'data/data_v2/test/sampled_vars.parqu
 
 #model_name= "hcvae"
 model_name = "cvae"
+#model_name = "attn_cvae"
+z_dim = 32
 
 #weights_path = os.path.join(BASE_DIR, 'model/weights/hcvae_256_new_batch_64_epochs_40_zdim_32_sigmoid_1.0_stall_end.pth') # MSE=1.363886, Avg Recon Loss=0.0022, Avg KL=0.2910
 #weights_path = os.path.join(BASE_DIR, 'model/weights/hcvae_zdim_64_sigmoid_1.0_stall_end.pth') # MSE=1.535981, Avg Recon Loss=0.0094, Avg KL=0.0191
 weights_path = os.path.join(BASE_DIR, 'model/weights/cvae_zdim_64_sigmoid_1.0_stall_end.pth') # MSE=0.373193, Avg Recon Loss=0.3728, Avg KL=0.0002
+#weights_path = os.path.join(BASE_DIR, 'model/weights/hcvae_zdim_32_sigmoid_1.0_stall_end.pth') # MSE=1.497555, Avg Recon Loss=0.0069, Avg KL=0.0161
+#weights_path = os.path.join(BASE_DIR, 'model/weights/attn_cvae_zdim_32_sigmoid_1.0_stall_end.pth') 
 
 imgs_transforms = transforms.Compose([
             transforms.Resize((img_dim, img_dim)),
@@ -64,9 +69,11 @@ test_loader = torch.utils.data.DataLoader(
 
 # Load the model
 if model_name == "hcvae":
-    model = HierarchicalCVAE(img_channels=history, img_size=img_dim, attn=True)
+    model = HierarchicalCVAE(latent_dim=z_dim, img_channels=history, img_size=img_dim, attn=True)
 elif model_name == "cvae":
-    model = CVAE(z_dim=64)
+    model = CVAE(z_dim=z_dim)
+elif model_name == "attn_cvae":
+    model = attnCVAE(latent_dim=z_dim, img_channels=history, img_size=img_dim, attn=True)
 model.load_state_dict(torch.load(weights_path, map_location=device))
 model = model.to(device)
 model.eval()
@@ -102,64 +109,64 @@ def generate_samples(model, imgs_list, num_samples, transformation=None, normali
 
 
 # Example usage of generate_samples function
-# scenario = "ARG_Carcarana-4_1_T-1"
-# scenario_dir = os.path.join(test_imgs_root, scenario)
+scenario = "ARG_Carcarana-4_1_T-1"
+scenario_dir = os.path.join(test_imgs_root, scenario)
 
-# img_paths = [
-#     os.path.join(scenario_dir, f"{i}.png")
-#     for i in range(3)
-# ]
+img_paths = [
+    os.path.join(scenario_dir, f"{i}.png")
+    for i in range(3)
+]
 
-# scenario_dir = 'test'
-# img_paths = [
-#     os.path.join(scenario_dir, f"{i}.png")
-#     for i in range(3)
-# ]
+scenario_dir = 'test'
+img_paths = [
+    os.path.join(scenario_dir, f"{i}.png")
+    for i in range(3)
+]
 
-# imags = [Image.open(p).convert("RGB") for p in img_paths]
+imags = [Image.open(p).convert("RGB") for p in img_paths]
 
-# parameters = generate_samples(model, imags, num_samples=5, transformation=imgs_transforms, normalizer=normalizer, device=device)
-# print(f"Generated samples: {parameters}")
+parameters = generate_samples(model, imags, num_samples=5, transformation=imgs_transforms, normalizer=normalizer, device=device)
+print(f"Generated samples: {parameters}")
 
 
-total_mse = 0.0
-total_rec_loss = 0.0
-total_kl = 0.0
-count = 0
+# total_mse = 0.0
+# total_rec_loss = 0.0
+# total_kl = 0.0
+# count = 0
 
-print("\nEvaluating model on test set...")
+# print("\nEvaluating model on test set...")
 
-with torch.inference_mode():
-    test_bar = tqdm(test_loader, desc="Test MSE", ncols=100)
-    for batch_targets, batch_imgs in test_bar:
-        batch_imgs = batch_imgs.to(device)
-        batch_targets = batch_targets.to(device)
+# with torch.inference_mode():
+#     test_bar = tqdm(test_loader, desc="Test MSE", ncols=100)
+#     for batch_targets, batch_imgs in test_bar:
+#         batch_imgs = batch_imgs.to(device)
+#         batch_targets = batch_targets.to(device)
 
-        # Forward pass
-        parameters_normalized = model.generate(
-            c=batch_imgs,
-            batch=batch_targets.shape[0],
-            device=device
-        )
-        parameters_reconstructed, kl_values = model(c=batch_imgs, x=batch_targets)
+#         # Forward pass
+#         parameters_normalized = model.generate(
+#             c=batch_imgs,
+#             batch=batch_targets.shape[0],
+#             device=device
+#         )
+#         parameters_reconstructed, kl_values = model(c=batch_imgs, x=batch_targets)
 
-        #print(parameters_normalized, batch_targets)
-        mse = F.mse_loss(parameters_normalized, batch_targets)
-        _, rec_loss, kl = reconstruction_kld(parameters_reconstructed, batch_targets, kl_values, beta=1.0)
+#         #print(parameters_normalized, batch_targets)
+#         mse = F.mse_loss(parameters_normalized, batch_targets)
+#         _, rec_loss, kl = reconstruction_kld(parameters_reconstructed, batch_targets, kl_values, beta=1.0)
 
-        total_mse += mse.item()
-        total_rec_loss += rec_loss.item()
-        total_kl += kl.item()
-        count += batch_targets.shape[0]
+#         total_mse += mse.item()
+#         total_rec_loss += rec_loss.item()
+#         total_kl += kl.item()
+#         count += batch_targets.shape[0]
 
-        test_bar.set_postfix({
-            "MSE": f"{total_mse / count:.6f}",
-            "Recon": f"{total_rec_loss / count:.4f}",
-            "KL": f"{total_kl / count:.4f}"
-        })
+#         test_bar.set_postfix({
+#             "MSE": f"{total_mse / count:.6f}",
+#             "Recon": f"{total_rec_loss / count:.4f}",
+#             "KL": f"{total_kl / count:.4f}"
+#         })
 
-mean_mse = total_mse / count
-mean_rec_loss = total_rec_loss / count
-mean_kl = total_kl / count
+# mean_mse = total_mse / count
+# mean_rec_loss = total_rec_loss / count
+# mean_kl = total_kl / count
 
-print(f"\n Final Test MSE={mean_mse:.6f}, Avg Recon Loss={mean_rec_loss:.4f}, Avg KL={mean_kl:.4f}")
+# print(f"\n Final Test MSE={mean_mse:.6f}, Avg Recon Loss={mean_rec_loss:.4f}, Avg KL={mean_kl:.4f}")
