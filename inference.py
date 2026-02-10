@@ -95,8 +95,8 @@ def generate_samples(model, imgs_list, num_samples, transformation=None, normali
         return None
 
     # Dataset statistics [t, d, v]    
-    target_mean    = [ 4.69328707, -0.03879964, 10.74773858]
-    target_std_dev = [0.67665561, 0.23729723, 3.20131289]
+    target_mean    =  [ 4.17129931, -0.03913221, 10.2505778 ]
+    target_std_dev =  [0.92924915, 0.30188121, 4.31719223]
     
     with torch.inference_mode():
         imgs_tensor = torch.cat(imgs_list[0:history], dim=1).to(device)
