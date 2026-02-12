@@ -3,6 +3,7 @@ import torch
 from PIL import Image
 from .hcvae import HierarchicalCVAE
 from .imgs_cond_dataset import CVAEDataset
+from .attn_cvae import attnCVAE
 from torchvision import transforms
 from .normalizer import Normalizer
 
@@ -14,13 +15,14 @@ class CVAE_Efficient():
         self.batch_size = 1024
         self.img_dim = 256
         self.frame_size = 3
+        self.latent_dim = 64
         self.num_workers = 16  # for data loading
         
         self.model = self.initialize_model(weights_path=model_path, frame_size=self.frame_size, img_dim=self.img_dim, device=device)
         self.imgs_transforms = self.initialize_transforms(img_dim=self.img_dim)
 
-    def initialize_model(self, weights_path: str, frame_size: int, img_dim: int, device:torch.device)->HierarchicalCVAE:
-        model = HierarchicalCVAE(img_channels=frame_size,img_size=img_dim, attn=True)
+    def initialize_model(self, weights_path: str, frame_size: int, img_dim: int, device:torch.device)->attnCVAE:
+        model = attnCVAE(latent_dim=self.latent_dim, img_channels=self.frame_size, img_size=self.img_dim)
         model.load_state_dict(torch.load(weights_path, map_location=device))
         model = model.to(device)
         model.eval()
@@ -28,6 +30,7 @@ class CVAE_Efficient():
 
     def initialize_transforms(self, img_dim:int)->transforms.Compose:
         imgs_transforms = transforms.Compose([
+                    transforms.CenterCrop((514, 514)),
                     transforms.Resize((img_dim, img_dim)),
                     transforms.ToTensor(),  
                     transforms.Grayscale(num_output_channels=1),
