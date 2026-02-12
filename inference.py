@@ -6,6 +6,7 @@ import torch.nn.functional as F
 from cvae.model.hcvae import HierarchicalCVAE, reconstruction_kld
 from cvae.model.conditional_vae import CVAE 
 from cvae.model.attn_cvae import attnCVAE
+from cvae.model.cnn_cvae import cnnCVAE
 from cvae.model.imgs_cond_dataset import CVAEDataset
 from torchvision import transforms
 from normalizer import Normalizer
@@ -29,23 +30,23 @@ test_imgs_root = os.path.join(BASE_DIR, 'data/data_v2/test/imgs/')
 targets_test_path = os.path.join(BASE_DIR, 'data/data_v2/test/sampled_vars.parquet')
 
 #model_name= "hcvae"
-model_name = "cvae"
-#model_name = "attn_cvae"
-z_dim = 32
+#model_name = "cvae"
+model_name = "attn_cvae"
+#model_name = "cnn_cvae"
+z_dim = 64
 
-#weights_path = os.path.join(BASE_DIR, 'model/weights/hcvae_256_new_batch_64_epochs_40_zdim_32_sigmoid_1.0_stall_end.pth') # MSE=1.363886, Avg Recon Loss=0.0022, Avg KL=0.2910
-#weights_path = os.path.join(BASE_DIR, 'model/weights/hcvae_zdim_64_sigmoid_1.0_stall_end.pth') # MSE=1.535981, Avg Recon Loss=0.0094, Avg KL=0.0191
-weights_path = os.path.join(BASE_DIR, 'model/weights/cvae_zdim_64_sigmoid_1.0_stall_end.pth') # MSE=0.373193, Avg Recon Loss=0.3728, Avg KL=0.0002
-#weights_path = os.path.join(BASE_DIR, 'model/weights/hcvae_zdim_32_sigmoid_1.0_stall_end.pth') # MSE=1.497555, Avg Recon Loss=0.0069, Avg KL=0.0161
-#weights_path = os.path.join(BASE_DIR, 'model/weights/attn_cvae_zdim_32_sigmoid_1.0_stall_end.pth') 
+#weights_path = os.path.join(BASE_DIR, 'model/weights/cvae_zdim_64_sigmoid_1.0_stall_end.pth') # MSE=0.373193, Avg Recon Loss=0.3728, Avg KL=0.0002
+#weights_path = os.path.join(BASE_DIR, 'model/weights/cnn_cvae_zdim_64_sigmoid_1.0_stall_end.pth') # MSE=0.465423, Avg Recon Loss=0.4093, Avg KL=0.0484
+weights_path = os.path.join(BASE_DIR, 'model/weights/attn_cvae_zdim_64_sigmoid_1.0_stall_end.pth') # MSE=0.336199, Avg Recon Loss=0.3361, Avg KL=0.0041
 
 imgs_transforms = transforms.Compose([
-            transforms.Resize((img_dim, img_dim)),
-            transforms.ToTensor(),  
-            transforms.Grayscale(num_output_channels=1),
-            transforms.Lambda(lambda x: 1.0 - x),
-            transforms.Normalize( mean=[0.5], std=[0.5])
-        ])
+    transforms.CenterCrop((514, 514)),
+    transforms.Resize((img_dim, img_dim)),
+    transforms.ToTensor(),
+    transforms.Grayscale(num_output_channels=1),
+    transforms.Lambda(lambda x: 1.0 - x),
+    transforms.Normalize(mean=[0.5], std=[0.5])
+])
 
 normalizer = Normalizer()
 
@@ -73,7 +74,9 @@ if model_name == "hcvae":
 elif model_name == "cvae":
     model = CVAE(z_dim=z_dim)
 elif model_name == "attn_cvae":
-    model = attnCVAE(latent_dim=z_dim, img_channels=history, img_size=img_dim, attn=True)
+    model = attnCVAE(latent_dim=z_dim, img_channels=history, img_size=img_dim)
+elif model_name == "cnn_cvae":
+    model = cnnCVAE(latent_dim=z_dim, img_channels=history, img_size=img_dim)
 model.load_state_dict(torch.load(weights_path, map_location=device))
 model = model.to(device)
 model.eval()
