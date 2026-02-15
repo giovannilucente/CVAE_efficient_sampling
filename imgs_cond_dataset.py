@@ -27,7 +27,7 @@ class CVAEDataset(Dataset):
                  history=5):   # number of previous frames to return
 
         self.mode = mode
-        self.normalizer_dir = 'cvae/model/weights/'
+        self.normalizer_dir = 'statistics'
         self.history = history
         self.image_root = image_root
         self.image_transform = image_transform
@@ -37,6 +37,7 @@ class CVAEDataset(Dataset):
 
         # --- Targets only ---
         self.target_features = ["t", "d", "v"]
+        self.targets = targets_df[self.target_features].to_numpy(dtype="float32")
         self.targets_np = targets_df[self.target_features].to_numpy(dtype="float32")
 
         if normalize:

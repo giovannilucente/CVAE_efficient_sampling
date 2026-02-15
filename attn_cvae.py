@@ -180,7 +180,6 @@ class attnCVAE(nn.Module):
         self.hidden_dim = hidden_dim
         self.latent_dim = latent_dim
         self.patch_size = 16
-        #self.seq_len    = (img_size // self.patch_size) ** 2 
         self.seq_len    = 16
         
         # Conditioning image tokenizers
@@ -209,7 +208,6 @@ class attnCVAE(nn.Module):
         eps = torch.randn_like(std)
         return mu + eps * std
 
-    
     def forward(self, x, c):
 
         c = self.cond(c)
@@ -227,8 +225,7 @@ class attnCVAE(nn.Module):
         
         return out, [kl, kl, kl, kl]
 
-
-    @torch.no_grad()
+    #@torch.no_grad()
     def generate(self, c, batch=1, device="cpu"):
         c = c.to(device).expand(batch, -1, -1, -1)
         
@@ -256,7 +253,7 @@ if __name__ == "__main__":
     from cvae.model.imgs_cond_dataset import CVAEDataset
     from tqdm import tqdm
 
-    model = HierarchicalCVAE(hidden_dim=32, input_dim=3, img_channels=history,  img_size=img_size, attn=True).to(device)
+    model = attnCVAE(hidden_dim=32, input_dim=3, img_channels=history,  img_size=img_size, attn=True).to(device)
     BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
     val_imgs_root = os.path.join(BASE_DIR, 'data/data_v2/val/imgs/')
     targets_val_path = os.path.join(BASE_DIR, 'data/data_v2/val/x_validation.parquet')
