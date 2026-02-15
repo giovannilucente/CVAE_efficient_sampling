@@ -46,8 +46,8 @@ class CVAE_Efficient():
         imgs_list = [self.imgs_transforms(img).unsqueeze(0) for img in imgs_list] 
 
         # Dataset statistics [t, d, v]    
-        target_mean    = [4.17129931, -0.03913221, 10.2505778]
-        target_std_dev = [0.92924915, 0.30188121, 4.31719223]
+        target_mean    = [ 3.5061133,  -0.01178558,  7.61826559]
+        target_std_dev = [0.82476484, 0.25901316, 5.04271876]
         
         with torch.inference_mode():
             imgs_tensor = torch.cat(imgs_list[0:self.frame_size], dim=1).to(self.device)
