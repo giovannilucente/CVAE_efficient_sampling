@@ -30,7 +30,7 @@ class CVAE_Efficient():
 
     def initialize_transforms(self, img_dim:int)->transforms.Compose:
         imgs_transforms = transforms.Compose([
-                    # transforms.CenterCrop((514, 514)),
+                    # transforms.CenterCrop((800, 800)),
                     # transforms.Resize((img_dim, img_dim)),
                     transforms.ToTensor(),  
                     transforms.Grayscale(num_output_channels=1),
