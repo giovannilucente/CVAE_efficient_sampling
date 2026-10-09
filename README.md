@@ -157,19 +157,32 @@ collapse, so best-of-K is not better than the marginal sampler yet. Watch `sprea
 runs; options are a lower `--beta_end` (e.g. 0.1, as the original HCVAE training) or `--model
 hcvae`.
 
-## 4. Full training
+## 4. Full training (Slurm)
+
+Edit the block "adjust to the cluster" at the top of `slurm_train.sh` once:
+- partition / account lines, if needed;
+- `CACHE`, `RUN`, `CONDA_ENV`;
+- a `module load`, if CUDA comes from modules.
+
+Then submit from `CVAE_efficient_sampling/`:
 
 ```bash
-sbatch slurm_train.sh                                         # edit CACHE / RUN / partition first
-sbatch slurm_train.sh --tau 0.25 --beta_end 0.1               # extra arguments go to the training
+sbatch slurm_train.sh                                           # full training
+sbatch slurm_train.sh --tau 0.25 --beta_end 0.1                 # extra arguments go to train_cost_cvae.py
+RUN=$HOME/runs/tau0.25 sbatch slurm_train.sh --tau 0.25         # a second run in its own directory
+RUN=$HOME/runs/smoke sbatch slurm_train.sh --limit_scenarios 300 --epochs 2 --draws_per_cycle 4
+squeue -u $USER; tail -f cost_cvae_<jobid>.log                  # follow a job
 ```
 
-**Checkpoints and resuming.**
-- A checkpoint is written every `--ckpt_minutes` (30) and at the end of every epoch.
-- Slurm sends SIGUSR1 10 min before the time limit; the run then saves and stops cleanly.
-  `--max_hours` is a backup limit.
-- To continue, submit the same command again. It resumes at the same position of the epoch.
-  Changing the data or sampling options of an existing run directory is refused.
+**Long runs are automatic.**
+- 10 min before the time limit, Slurm sends SIGUSR1. The training writes a checkpoint and exits
+  with code 3.
+- The job then submits itself again (at most `MAX_RESUBMIT`, default 5), with the same settings
+  and arguments. The new job resumes at the same position of the epoch.
+- Exit code 0 means the training is complete.
+- A checkpoint is also written every `--ckpt_minutes` (30) and at every epoch end, so a crash
+  loses at most 30 min. Submitting the same command again resumes as well.
+- Changing the data or sampling options of an existing run directory is refused; use a new `RUN`.
 
 **Outputs in the run directory:**
 - `model_best.pth` (best validation loss);

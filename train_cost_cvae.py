@@ -6,7 +6,8 @@ proportional to exp(-J~ / tau) / q(z) (see cem_dataset.py); the loss is the CVAE
 Long trainings run as several jobs (e.g. 24 h HPC limit): a checkpoint is written every
 --ckpt_minutes and at the end of every epoch, the run stops cleanly after --max_hours or on
 SIGTERM / SIGUSR1 (sent by Slurm before the time limit with --signal), and starting the same
-command again resumes from the last checkpoint, at the same position of the epoch.
+command again resumes from the last checkpoint, at the same position of the epoch. Exit code 3
+means "stopped, resume me" (slurm_train.sh then resubmits itself), 0 means training is complete.
 
 python train_cost_cvae.py --cache <cache dir> --out <run dir> [--model attn|hcvae] [--tau 0.5] ...
 Outputs in <run dir>: ckpt_last.pt, model_best.pth (state dict), normalizer/, config.json, log.tsv
@@ -27,6 +28,9 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from beta_annealer import BetaAnnealer  # noqa: E402
 from cem_dataset import CEMCache, CEMCycleDataset, ResumableSampler, select_cycles, split_by_scenario  # noqa: E402
 from normalizer import Normalizer  # noqa: E402
+
+
+RESUME_EXIT_CODE = 3  # stopped before the end (time limit / signal); slurm_train.sh resubmits on it
 
 
 def parse_args():
@@ -197,7 +201,7 @@ def main():
                 last_ckpt = time.time()
                 if stop.requested or out_of_time:
                     logging.info("stopped; run the same command to resume")
-                    return
+                    sys.exit(RESUME_EXIT_CODE)
 
         # end of epoch: validation on fixed draws, logging, best model
         model.eval()

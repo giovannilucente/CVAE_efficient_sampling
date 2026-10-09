@@ -3,7 +3,6 @@ import numpy as np
 import torch
 from PIL import Image
 from .hcvae import HierarchicalCVAE
-from .imgs_cond_dataset import CVAEDataset
 from .attn_cvae import attnCVAE
 from torchvision import transforms
 from .normalizer import Normalizer
