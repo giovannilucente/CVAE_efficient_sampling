@@ -26,7 +26,8 @@ from torch.utils.data import DataLoader
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from beta_annealer import BetaAnnealer  # noqa: E402
-from cem_dataset import CEMCache, CEMCycleDataset, ResumableSampler, select_cycles, split_by_scenario  # noqa: E402
+from cem_dataset import CEMCache, CEMCycleDataset, ResumableSampler, bev_tensor, select_cycles, split_by_scenario  # noqa: E402
+from generation_check import generation_metrics  # noqa: E402
 from normalizer import Normalizer  # noqa: E402
 
 
@@ -58,6 +59,9 @@ def parse_args():
     p.add_argument("--workers", type=int, default=8)
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--val_max_cycles", type=int, default=20000, help="validation subset size (fixed)")
+    p.add_argument("--gen_check_cycles", type=int, default=300,
+                   help="validation cycles of the per-epoch generation check (generation_check.py), 0 = off")
+    p.add_argument("--gen_check_k", type=int, default=16, help="samples per cycle of the generation check")
     p.add_argument("--limit_scenarios", type=int, help="only the first n scenarios of the cache (smoke tests)")
     # job control
     p.add_argument("--max_hours", type=float, default=23.5, help="stop and checkpoint after this wall time")
@@ -168,7 +172,15 @@ def main():
 
     log_path = os.path.join(args.out, "log.tsv")
     if not os.path.exists(log_path):
-        open(log_path, "w").write("epoch\ttrain_loss\ttrain_recon\ttrain_kl\tval_loss\tval_recon\tval_kl\tbeta\tlr\n")
+        open(log_path, "w").write("epoch\ttrain_loss\ttrain_recon\ttrain_kl\tval_loss\tval_recon\tval_kl\tbeta\tlr\t"
+                                  "gen_in_bounds\tgen_best_cost\tgen_mean_dist\tgen_spread\ttarget_spread\n")
+    std = normalizer.target_scaler.scale_
+    gen_rows = val_rows[:args.gen_check_cycles]
+
+    @torch.no_grad()
+    def cvae_sampler(frames, lo, hi, k, rng):
+        z = model.generate(bev_tensor(frames, args.img_size)[None].to(device), batch=k, device=device)
+        return normalizer.inverse_transform_targets(z.cpu().numpy())
     last_ckpt = time.time()
 
     while state["epoch"] < args.epochs:
@@ -213,10 +225,19 @@ def main():
         val /= max(len(val_loader), 1)
         train = [v / max(state["batches"], 1) for v in state["sums"]]
         lr = optimizer.param_groups[0]["lr"]
+        # generation check: are the samples spread like the target, and do they follow the scene?
+        gen = [float("nan")] * 5
+        if len(gen_rows):
+            summary = generation_metrics({"cvae": cvae_sampler}, val_cache, gen_rows, args.gen_check_k, args.tau,
+                                         not args.no_density_correction, std, seed=args.seed)
+            m = summary["cvae"]
+            gen = [m["in_bounds"], m["best_cost"], m["mean_dist"], m["spread"], summary["target_spread"]]
         with open(log_path, "a") as fh:
             fh.write("\t".join(str(v) for v in [epoch + 1, *np.round(train, 6), *np.round(val, 6),
-                                                round(state["beta"], 6), lr]) + "\n")
-        logging.info(f"epoch {epoch + 1} done: train loss {train[0]:.4f}, val loss {val[0]:.4f} (recon {val[1]:.4f}, kl {val[2]:.4f})")
+                                                round(state["beta"], 6), lr, *np.round(gen, 4)]) + "\n")
+        logging.info(f"epoch {epoch + 1} done: train loss {train[0]:.4f}, val loss {val[0]:.4f} (recon {val[1]:.4f}, kl {val[2]:.4f}); "
+                     f"generation: in_bounds {gen[0]:.3f}, best_cost@{args.gen_check_k} {gen[1]:.3f}, "
+                     f"mean_dist {gen[2]:.3f}, spread {gen[3]:.3f} (target {gen[4]:.3f})")
         if val[0] < state["best_val"]:
             state["best_val"] = float(val[0])
             torch.save(model.state_dict(), os.path.join(args.out, "model_best.pth"))
