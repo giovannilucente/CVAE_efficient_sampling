@@ -1,4 +1,5 @@
 import os
+import numpy as np
 import torch
 from PIL import Image
 from .hcvae import HierarchicalCVAE
@@ -60,3 +61,45 @@ class CVAE_Efficient():
                 parameters = parameters_normalized.cpu().numpy()
         
         return parameters.tolist()
+
+
+class CostAwareCVAE:
+    """Sampler of a model trained by train_cost_cvae.py: BEV history of the current planning cycle
+    -> sampling parameters z = [d, v, T] (terminal lateral offset, terminal speed, horizon).
+
+    run_dir holds config.json, normalizer/ and the weights. Images are converted exactly as in
+    training (cem_dataset.bev_tensor).
+    """
+
+    HISTORY = 3
+
+    def __init__(self, run_dir: str, device: torch.device, weights: str = "model_best.pth"):
+        import json
+        from .cem_dataset import bev_tensor
+        self._bev_tensor = bev_tensor
+        self.device = device
+        self.config = json.load(open(os.path.join(run_dir, "config.json")))
+        self.img_size = self.config["img_size"]
+        if self.config["model"] == "attn":
+            self.model = attnCVAE(hidden_dim=32, input_dim=3, img_channels=self.HISTORY,
+                                  img_size=self.img_size, latent_dim=self.config["latent_dim"])
+        else:
+            self.model = HierarchicalCVAE(hidden_dim=32, input_dim=3, img_channels=self.HISTORY,
+                                          img_size=self.img_size, latent_dim=self.config["latent_dim"], attn=True)
+        self.model.load_state_dict(torch.load(os.path.join(run_dir, weights), map_location=device))
+        self.model.to(device).eval()
+        self.normalizer = Normalizer.load(os.path.join(run_dir, "normalizer"))
+
+    def condition(self, frames) -> torch.Tensor:
+        """frames: the last up to 3 BEV images (PIL or arrays), oldest first. At the start of a
+        scenario the history is padded with the first frame, as in training (t = 1 -> [0, 0, 1])."""
+        frames = list(frames)[-self.HISTORY:]
+        frames = [frames[0]] * (self.HISTORY - len(frames)) + frames
+        gray = [np.asarray(f.convert("L")) if isinstance(f, Image.Image) else np.asarray(f) for f in frames]
+        return self._bev_tensor(gray, self.img_size)[None].to(self.device)
+
+    @torch.no_grad()
+    def generate_samples(self, frames, num_samples: int) -> np.ndarray:
+        """num_samples x 3 array of z = [d, v, T]."""
+        z = self.model.generate(c=self.condition(frames), batch=num_samples, device=self.device)
+        return self.normalizer.inverse_transform_targets(z.cpu().numpy())
