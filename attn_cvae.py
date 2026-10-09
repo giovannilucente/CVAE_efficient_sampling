@@ -227,9 +227,7 @@ class attnCVAE(nn.Module):
 
     #@torch.no_grad()
     def generate(self, c, batch=1, device="cpu"):
-        c = c.to(device).expand(batch, -1, -1, -1)
-        
-        c = self.cond(c)
+        c = self.cond(c.to(device)).expand(batch, -1, -1)  # encode the image once for all samples
         mu, logvar = self.pri(c)
         z = self.reparameterize(mu, logvar) 
         q = self.lat(z)

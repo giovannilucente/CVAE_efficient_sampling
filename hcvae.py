@@ -212,6 +212,8 @@ class HierarchicalCVAE(nn.Module):
         super().__init__()
         self.hidden_dim = hidden_dim
         self.latent_dim = latent_dim
+        # Weight of the latent sample added to each level, the same in forward() and generate()
+        self.latent_scale = 0.1
         self.patch_size = 16
         self.seq_len           = (img_size // self.patch_size) ** 2 // 2
         self.top_latent_length = (img_size // self.patch_size) ** 2 // 2
@@ -285,7 +287,7 @@ class HierarchicalCVAE(nn.Module):
         logvar4_p = torch.zeros_like(logvar4)
         z4 = self.reparameterize(mu4, logvar4)
         q4 = self.lat4(z4)
-        w4 = d4 + 0.1 * q4
+        w4 = d4 + self.latent_scale * q4
         d3 = self.dec3(torch.cat([w4, c4], dim=1))
 
         k3 = h3 + 0.1 * d3
@@ -293,7 +295,7 @@ class HierarchicalCVAE(nn.Module):
         mu3_p, logvar3_p = self.pri3(d3)
         z3 = self.reparameterize(mu3, logvar3)
         q3 = self.lat3(z3)
-        w3 = d3 + 0.1 * q3
+        w3 = d3 + self.latent_scale * q3
         d2 = self.dec2(torch.cat([w3, c3], dim=1))
 
         k2 = h2 + 0.1 * d2
@@ -301,7 +303,7 @@ class HierarchicalCVAE(nn.Module):
         mu2_p, logvar2_p = self.pri2(d2)
         z2 = self.reparameterize(mu2, logvar2)
         q2 = self.lat2(z2)
-        w2 = d2 + 0.1 * q2
+        w2 = d2 + self.latent_scale * q2
         d1 = self.dec1(torch.cat([w2, c2], dim=1))
 
         k1 = h1 + 0.1 * d1
@@ -309,7 +311,7 @@ class HierarchicalCVAE(nn.Module):
         mu1_p, logvar1_p = self.pri1(d1)
         z1 = self.reparameterize(mu1, logvar1)
         q1 = self.lat1(z1)
-        w1 = d1 + 0.1 * q1
+        w1 = d1 + self.latent_scale * q1
         out = self.final(torch.cat([w1, c1], dim=1))
         
         
@@ -323,35 +325,33 @@ class HierarchicalCVAE(nn.Module):
 
     @torch.no_grad()
     def generate(self, c, batch=1, device="cpu"):
-        c = c.to(device).expand(batch, -1, -1, -1)
+        c = c.to(device)
         d4 = self.top_latent.expand(batch, -1, -1)
 
-        c1 = self.cond1(c)
-        c2 = self.cond2(c)
-        c3 = self.cond3(c)
-        c4 = self.cond4(c)
+        # encode the image once for all samples
+        c1, c2, c3, c4 = (cond(c).expand(batch, -1, -1) for cond in (self.cond1, self.cond2, self.cond3, self.cond4))
 
         z4 = torch.randn(batch, self.seq_len, self.latent_dim).to(device)
         q4 = self.lat4(z4)
-        w4 = d4 + q4
+        w4 = d4 + self.latent_scale * q4
         d3 = self.dec3(torch.cat([w4, c4], dim=1))
 
         mu3, logvar3 = self.pri3(d3)
         z3 = self.reparameterize(mu3, logvar3)
         q3 = self.lat3(z3)
-        w3 = d3 + q3
+        w3 = d3 + self.latent_scale * q3
         d2 = self.dec2(torch.cat([w3, c3], dim=1))
 
         mu2, logvar2 = self.pri2(d2)
         z2 = self.reparameterize(mu2, logvar2)
         q2 = self.lat2(z2)
-        w2 = d2 + q2
+        w2 = d2 + self.latent_scale * q2
         d1 = self.dec1(torch.cat([w2, c2], dim=1))
 
         mu1, logvar1 = self.pri1(d1)
         z1 = self.reparameterize(mu1, logvar1)
         q1 = self.lat1(z1)
-        w1 = d1 + q1
+        w1 = d1 + self.latent_scale * q1
         out = self.final(torch.cat([w1, c1], dim=1))
 
         return out
