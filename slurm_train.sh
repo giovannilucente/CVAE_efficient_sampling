@@ -1,27 +1,25 @@
-#!/bin/bash
+#!/bin/bash -l
 # Cost-aware CVAE training as a Slurm job. Submit from CVAE_efficient_sampling/:
 #     sbatch slurm_train.sh                                   # full training
 #     sbatch slurm_train.sh --tau 0.25 --beta_end 0.1         # extra arguments go to train_cost_cvae.py
-#     RUN=$HOME/runs/smoke sbatch slurm_train.sh --limit_scenarios 300 --epochs 2 --draws_per_cycle 4
+#     RUN=$WORK/runs/smoke sbatch slurm_train.sh --limit_scenarios 300 --epochs 2 --draws_per_cycle 4
 # Shortly before the time limit Slurm sends SIGUSR1: the training writes a checkpoint and exits with
 # code 3, and this script submits itself again (at most MAX_RESUBMIT times); the new job resumes from
 # $RUN/ckpt_last.pt at the same position. Exit code 0 = training complete.
 #
 # ---- adjust to the cluster ---------------------------------------------------------------------
 #SBATCH --job-name=cost_cvae
-#SBATCH --gres=gpu:1                  # one A40 or A100 (about 2 GB GPU memory at batch 64)
-##SBATCH --partition=<gpu partition>  # remove one '#' and set, if the cluster needs it
-##SBATCH --account=<account>
-#SBATCH --cpus-per-task=9             # 8 data-loading workers + main process
-#SBATCH --mem=48G                     # the cache is memory-mapped; most of it is reclaimable page cache
+#SBATCH --partition=a40               # NHR@FAU alex; for an A100: --partition=a100 --gres=gpu:a100:1
+#SBATCH --gres=gpu:a40:1              # one GPU (about 2 GB GPU memory at batch 64)
+# no --mem / --cpus-per-task on alex: CPUs and RAM are allocated with the GPU
 #SBATCH --time=24:00:00
 #SBATCH --signal=USR1@600             # 10 min before the limit: checkpoint and stop cleanly
 #SBATCH --output=cost_cvae_%j.log
-CACHE=${CACHE:-$HOME/data/cem_train_cache}         # cache built by cem_cache.py
-RUN=${RUN:-$HOME/runs/cost_cvae_tau0.5}            # run directory (resumed if it exists)
+CACHE=${CACHE:-$WORK/cem_train_cache}              # cache built by cem_cache.py
+RUN=${RUN:-$WORK/runs/cost_cvae_tau0.5}            # run directory (resumed if it exists)
 CONDA_ENV=${CONDA_ENV:-cvae}
 MAX_RESUBMIT=${MAX_RESUBMIT:-5}
-# module load cuda/12.4                            # if the cluster provides CUDA via modules
+module load python/3.12-base                       # provides conda on alex
 # -------------------------------------------------------------------------------------------------
 
 set -u
