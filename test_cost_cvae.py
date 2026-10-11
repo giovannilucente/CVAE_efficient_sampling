@@ -20,7 +20,7 @@ import torch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from CVAE_efficient_sampling.CVAE import CostAwareCVAE  # noqa: E402
-from CVAE_efficient_sampling.cem_dataset import CEMCache, select_cycles, split_by_scenario  # noqa: E402
+from CVAE_efficient_sampling.cem_dataset import EGO_COLUMNS, CEMCache, select_cycles, split_by_scenario  # noqa: E402
 from CVAE_efficient_sampling.generation_check import generation_metrics  # noqa: E402
 
 
@@ -43,12 +43,13 @@ def main():
     rows = np.random.default_rng(args.seed).permutation(rows)[:args.cycles]
     mean, std = sampler.normalizer.target_scaler.mean_, sampler.normalizer.target_scaler.scale_
     samplers = {
-        "cvae": lambda frames, lo, hi, k, rng: sampler.generate_samples(frames, k),
-        "uniform": lambda frames, lo, hi, k, rng: lo + (hi - lo) * rng.random((k, 3)),
-        "marginal": lambda frames, lo, hi, k, rng: mean + std * rng.standard_normal((k, 3)),
+        "cvae": lambda frames, lo, hi, k, rng, ego: sampler.generate_samples(frames, k, ego=ego),
+        "uniform": lambda frames, lo, hi, k, rng, ego: lo + (hi - lo) * rng.random((k, 3)),
+        "marginal": lambda frames, lo, hi, k, rng, ego: mean + std * rng.standard_normal((k, 3)),
     }
     summary = generation_metrics(samplers, cache, rows, args.k, cfg["tau"], not cfg["no_density_correction"],
-                                 std, seed=args.seed, reference=True)
+                                 std, seed=args.seed, reference=True,
+                                 ego_columns=EGO_COLUMNS if sampler.uses_ego else None)
 
     print(f"{len(rows)} held-out cycles of {cache.dir}, K = {args.k} samples each (run {args.run})")
     print(f"{'sampler':10s} {'in_bounds':>10s} {'best_dist':>10s} {'best_cost@K':>12s} {'mean_dist':>10s} {'spread':>8s}")

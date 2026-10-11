@@ -26,7 +26,8 @@ from torch.utils.data import DataLoader
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from beta_annealer import BetaAnnealer  # noqa: E402
-from cem_dataset import CEMCache, CEMCycleDataset, ResumableSampler, bev_tensor, select_cycles, split_by_scenario  # noqa: E402
+from cem_dataset import (EGO_COLUMNS, CEMCache, CEMCycleDataset, EgoScaler, ResumableSampler, bev_tensor,  # noqa: E402
+                         select_cycles, split_by_scenario)
 from generation_check import generation_metrics  # noqa: E402
 from normalizer import Normalizer  # noqa: E402
 
@@ -43,6 +44,8 @@ def parse_args():
     p.add_argument("--model", choices=("attn", "hcvae"), default="attn")
     p.add_argument("--img_size", type=int, default=256)
     p.add_argument("--latent_dim", type=int, default=64)
+    p.add_argument("--ego", action="store_true",
+                   help="condition also on the ego state and task (cem_dataset.EGO_COLUMNS; attn model only)")
     # cost-aware targets
     p.add_argument("--tau", type=float, default=0.5, help="temperature of exp(-J~ / tau)")
     p.add_argument("--no_density_correction", action="store_true", help="do not divide by CEM's density q(z)")
@@ -72,8 +75,11 @@ def parse_args():
 def build_model(args):
     if args.model == "attn":
         from attn_cvae import attnCVAE, reconstruction_kld
-        model = attnCVAE(hidden_dim=32, input_dim=3, img_channels=3, img_size=args.img_size, latent_dim=args.latent_dim)
+        model = attnCVAE(hidden_dim=32, input_dim=3, img_channels=3, img_size=args.img_size, latent_dim=args.latent_dim,
+                         ego_dim=len(EGO_COLUMNS) if args.ego else 0)
     else:
+        if args.ego:
+            raise SystemExit("--ego is implemented for --model attn only")
         from hcvae import HierarchicalCVAE, reconstruction_kld
         model = HierarchicalCVAE(hidden_dim=32, input_dim=3, img_channels=3, img_size=args.img_size,
                                  latent_dim=args.latent_dim, attn=True)
@@ -107,7 +113,7 @@ def main():
     if resume:
         saved = resume["args"]
         for k in ("cache", "model", "img_size", "latent_dim", "tau", "no_density_correction", "draws_per_cycle",
-                  "drop_tail_s", "drop_failed", "batch", "seed", "limit_scenarios"):
+                  "drop_tail_s", "drop_failed", "batch", "seed", "limit_scenarios", "ego"):
             if getattr(args, k) != saved.get(k):
                 raise SystemExit(f"--{k} differs from the run in {args.out} ({getattr(args, k)} vs {saved.get(k)})")
 
@@ -125,11 +131,21 @@ def main():
         train_rows, val_rows = split_by_scenario(cache.cycles, rows, args.val_fraction, args.seed)
         val_cache = cache
     val_rows = np.random.default_rng(args.seed).permutation(val_rows)[:args.val_max_cycles]
-    common = dict(tau=args.tau, density_correction=not args.no_density_correction, img_size=args.img_size)
+    norm_dir = os.path.join(args.out, "normalizer")
+    ego_scaler = None
+    if args.ego:  # fitted on the training cycles, saved with the target normalizer
+        ego_path = os.path.join(norm_dir, "ego_scaler.json")
+        if resume:
+            ego_scaler = EgoScaler.load(ego_path)
+        else:
+            os.makedirs(norm_dir, exist_ok=True)
+            ego_scaler = EgoScaler().fit(cache.cycles.iloc[train_rows][list(EGO_COLUMNS)].to_numpy(np.float64))
+            ego_scaler.save(ego_path)
+    common = dict(tau=args.tau, density_correction=not args.no_density_correction, img_size=args.img_size,
+                  ego_scaler=ego_scaler)
     train_set = CEMCycleDataset(cache, train_rows, draws_per_cycle=args.draws_per_cycle, seed=args.seed, **common)
     val_set = CEMCycleDataset(val_cache, val_rows, seed=args.seed + 1, **common)
 
-    norm_dir = os.path.join(args.out, "normalizer")
     if resume:
         normalizer = Normalizer.load(norm_dir)
     else:
@@ -178,8 +194,9 @@ def main():
     gen_rows = val_rows[:args.gen_check_cycles]
 
     @torch.no_grad()
-    def cvae_sampler(frames, lo, hi, k, rng):
-        z = model.generate(bev_tensor(frames, args.img_size)[None].to(device), batch=k, device=device)
+    def cvae_sampler(frames, lo, hi, k, rng, ego=None):
+        kw = {"e": torch.from_numpy(ego_scaler.transform(ego))[None]} if ego_scaler is not None else {}
+        z = model.generate(bev_tensor(frames, args.img_size)[None].to(device), batch=k, device=device, **kw)
         return normalizer.inverse_transform_targets(z.cpu().numpy())
     last_ckpt = time.time()
 
@@ -191,10 +208,15 @@ def main():
         sampler.set_epoch(epoch, start=state["position"])
         loader = DataLoader(train_set, sampler=sampler, drop_last=True, **loader_kw)
         model.train()
-        for x, imgs in loader:
+        for x, imgs, *ego in loader:  # ego: [] or [normalised ego state]
             x, imgs = x.to(device, non_blocking=True), imgs.to(device, non_blocking=True)
-            y_pred, kl_values = model(x, imgs)
+            e = ego[0].to(device, non_blocking=True) if ego else None
+            y_pred, kl_values = model(x, imgs, e) if e is not None else model(x, imgs)
             loss, rec, kl = loss_fn(y_pred, x, kl_values, beta=state["beta"])
+            if not torch.isfinite(loss):  # e.g. a value corrupted while reading the cache: never step on it
+                logging.warning(f"epoch {epoch + 1} item {state['position']}: non-finite loss, batch skipped")
+                state["position"] += len(x)
+                continue
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
@@ -219,8 +241,10 @@ def main():
         model.eval()
         val = np.zeros(3)
         with torch.no_grad():
-            for x, imgs in val_loader:
-                y_pred, kl_values = model(x.to(device), imgs.to(device))
+            for x, imgs, *ego in val_loader:
+                e = ego[0].to(device) if ego else None
+                y_pred, kl_values = model(x.to(device), imgs.to(device), e) if e is not None else \
+                    model(x.to(device), imgs.to(device))
                 val += [v.item() for v in loss_fn(y_pred, x.to(device), kl_values, beta=1.0)]
         val /= max(len(val_loader), 1)
         train = [v / max(state["batches"], 1) for v in state["sums"]]
@@ -229,7 +253,8 @@ def main():
         gen = [float("nan")] * 5
         if len(gen_rows):
             summary = generation_metrics({"cvae": cvae_sampler}, val_cache, gen_rows, args.gen_check_k, args.tau,
-                                         not args.no_density_correction, std, seed=args.seed)
+                                         not args.no_density_correction, std, seed=args.seed,
+                                         ego_columns=EGO_COLUMNS if args.ego else None)
             m = summary["cvae"]
             gen = [m["in_bounds"], m["best_cost"], m["mean_dist"], m["spread"], summary["target_spread"]]
         with open(log_path, "a") as fh:

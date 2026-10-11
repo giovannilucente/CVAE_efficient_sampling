@@ -19,8 +19,9 @@ METRICS = ("in_bounds", "best_dist", "best_cost", "mean_dist", "spread")
 
 
 def generation_metrics(samplers: dict, cache, rows, k: int, tau: float, density_correction: bool,
-                       std: np.ndarray, seed: int = 0, reference: bool = False) -> dict:
-    """samplers: name -> fn(frames, lo, hi, k, rng) returning (k, 3) samples [d, v, T].
+                       std: np.ndarray, seed: int = 0, reference: bool = False, ego_columns=None) -> dict:
+    """samplers: name -> fn(frames, lo, hi, k, rng, ego) returning (k, 3) samples [d, v, T]; ego is the
+    cycle's raw ego state (cache columns ego_columns) for models with an ego condition, else None.
     Returns {name: {metric: value}} (medians; means for in_bounds and spread) and target_spread."""
     rng = np.random.default_rng(seed)
     ref_rng = np.random.default_rng(seed + 1)  # own stream: the other rows stay as without reference
@@ -39,11 +40,12 @@ def generation_metrics(samplers: dict, cache, rows, k: int, tau: float, density_
         target_spread.append(np.sqrt((w[:, None] * (cand - target_mean) ** 2).sum(0) / w.sum()).mean())
         best = cand[np.argmin(jn)]
         frames = [cache.images[r[f"frame_{h}"]] for h in range(3)]
+        ego = r[list(ego_columns)].to_numpy(np.float64) if ego_columns else None
         for name in names:
             if name == "target":
                 z = cand[ref_rng.choice(n, size=k, p=w / w.sum())] * std
             else:
-                z = samplers[name](frames, lo, hi, k, rng)
+                z = samplers[name](frames, lo, hi, k, rng, ego)
             zs = z / std
             nearest = np.argmin(((zs[:, None, :] - cand[None]) ** 2).sum(-1), axis=1)
             out = res[name]

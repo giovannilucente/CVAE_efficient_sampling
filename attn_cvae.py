@@ -175,7 +175,13 @@ class DecoderLevel(nn.Module):
 
 
 class attnCVAE(nn.Module):
-    def __init__(self, hidden_dim=32, input_dim=3, img_channels=3,  img_size=256, latent_dim=64):
+    """ego_dim > 0 adds a vector condition (ego state and task): ego_tokens tokens of a VectorTokenizer are
+    appended to the image tokens, so the encoder, prior and decoder attend to both (Ichter et al. 2018
+    condition the sampling distribution on start state, goal and obstacles). ego_dim = 0 is the
+    image-only model of CVAE v1."""
+
+    def __init__(self, hidden_dim=32, input_dim=3, img_channels=3,  img_size=256, latent_dim=64, ego_dim=0,
+                 ego_tokens=8):
         super().__init__()
         self.hidden_dim = hidden_dim
         self.latent_dim = latent_dim
@@ -184,6 +190,9 @@ class attnCVAE(nn.Module):
         
         # Conditioning image tokenizers
         self.cond = ResNetTokenizer(img_size=img_size, hidden_dim=hidden_dim)
+
+        # Ego state tokenizer (optional vector condition)
+        self.ego = VectorTokenizer(input_dim=ego_dim, hidden_dim=hidden_dim, seq_len=ego_tokens) if ego_dim else None
 
         # Input tokenizer
         self.input_tokenizer = VectorTokenizer(input_dim=input_dim, hidden_dim=hidden_dim, seq_len=self.seq_len)
@@ -208,9 +217,16 @@ class attnCVAE(nn.Module):
         eps = torch.randn_like(std)
         return mu + eps * std
 
-    def forward(self, x, c):
-
+    def condition(self, c, e=None):
+        """Condition tokens: image tokens, followed by the ego tokens if the model has an ego input."""
         c = self.cond(c)
+        if self.ego is not None:
+            c = torch.cat([c, self.ego(e)], dim=1)
+        return c
+
+    def forward(self, x, c, e=None):
+
+        c = self.condition(c, e)
         x = self.input_tokenizer(x)
 
         h = self.enc(x, c)
@@ -226,8 +242,9 @@ class attnCVAE(nn.Module):
         return out, [kl, kl, kl, kl]
 
     #@torch.no_grad()
-    def generate(self, c, batch=1, device="cpu"):
-        c = self.cond(c.to(device)).expand(batch, -1, -1)  # encode the image once for all samples
+    def generate(self, c, batch=1, device="cpu", e=None):
+        e = None if e is None else e.to(device)
+        c = self.condition(c.to(device), e).expand(batch, -1, -1)  # encode the condition once for all samples
         mu, logvar = self.pri(c)
         z = self.reparameterize(mu, logvar) 
         q = self.lat(z)

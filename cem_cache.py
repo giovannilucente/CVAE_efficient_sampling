@@ -6,7 +6,8 @@ The CEM data set stores every candidate of every planning cycle, one folder per 
 This script converts it once into flat arrays that the training reads with memory maps, so a
 training job (also a resumed one) starts in seconds and needs little RAM:
     cycles.parquet    one row per planning cycle: scenario outcome, search space (d/v/T min/max),
-                      its feasible candidates (cand_start, cand_count), image history (frame_0..2)
+                      ego state and task (EGO_STATE: speed, acceleration, Frenet d and derivatives,
+                      v_des), its feasible candidates (cand_start, cand_count), image history (frame_0..2)
     cand_z.bin        float32 (N, 3): feasible candidates z = [d, v, T]
     cand_jn.bin       float32 (N,):   J normalised within the cycle, (J - J_min) / (J_90 - J_min)
     cand_logq.bin     float32 (N,):   log density of z under CEM's sampling distribution
@@ -31,6 +32,9 @@ import pandas as pd
 from PIL import Image
 
 HISTORY = 3          # frames per sample (t-2, t-1, t)
+# Ego state and task of a cycle (contexts.parquet), a possible vector condition of the CVAE:
+# v, a (Cartesian), s_d, s_dd, d, d_d, d_dd (Frenet start state), v_des (desired speed of J_V)
+EGO_STATE = ("v", "a", "s_d", "s_dd", "d", "d_d", "d_dd", "v_des")
 J_SCALE_QUANTILE = 90
 EPS = 1e-9
 
@@ -87,7 +91,8 @@ def read_scenario(data_dir: str, scenario: str):
                                        np.maximum(p[["std_d", "std_v", "std_T"]].to_numpy(), 1e-6))
             z_all.append(z.astype(np.float32)); jn_all.append(jn.astype(np.float32)); logq_all.append(logq)
         bounds = ctx.loc[t, ["d_min", "d_max", "v_min", "v_max", "T_min", "T_max"]].astype(float).to_dict()
-        cycles.append({"scenario": scenario, "time_step": int(t), "cand_count": n, **bounds,
+        ego = {f"ego_{k}": float(ctx.at[t, k]) for k in EGO_STATE}
+        cycles.append({"scenario": scenario, "time_step": int(t), "cand_count": n, **bounds, **ego,
                        "scenario_success": bool(info["success"]), "rear_end_failure": bool(info["rear_end_failure"]),
                        "failed_at_time_step": -1 if info["failed_at_time_step"] is None else int(info["failed_at_time_step"]),
                        "clearance_fallback": int(ctx.loc[t].clearance_fallback)})

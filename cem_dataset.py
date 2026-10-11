@@ -21,6 +21,35 @@ import torch.nn.functional as F
 from torch.utils.data import Dataset, Sampler
 
 DT = 0.1  # planning cycle [s]
+# Ego state and task of a cycle in the cache (cem_cache.py EGO_STATE, same order): the optional vector
+# condition of the CVAE besides the BEV frames
+EGO_COLUMNS = ("ego_v", "ego_a", "ego_s_d", "ego_s_dd", "ego_d", "ego_d_d", "ego_d_dd", "ego_v_des")
+
+
+class EgoScaler:
+    """Clips each ego feature to the 0.1-99.9 % range of the training cycles (e.g. one scenario starts at
+    258 m/s), then standardises it."""
+
+    def fit(self, x: np.ndarray) -> "EgoScaler":
+        self.lo, self.hi = np.percentile(x, 0.1, axis=0), np.percentile(x, 99.9, axis=0)
+        c = np.clip(x, self.lo, self.hi)
+        self.mean, self.std = c.mean(axis=0), np.maximum(c.std(axis=0), 1e-6)
+        return self
+
+    def transform(self, x: np.ndarray) -> np.ndarray:
+        return ((np.clip(x, self.lo, self.hi) - self.mean) / self.std).astype(np.float32)
+
+    def save(self, path: str) -> None:
+        json.dump({k: getattr(self, k).tolist() for k in ("lo", "hi", "mean", "std")} | {"columns": EGO_COLUMNS},
+                  open(path, "w"), indent=1)
+
+    @classmethod
+    def load(cls, path: str) -> "EgoScaler":
+        d, scaler = json.load(open(path)), cls()
+        assert tuple(d["columns"]) == EGO_COLUMNS, f"{path}: other ego columns"
+        for k in ("lo", "hi", "mean", "std"):
+            setattr(scaler, k, np.array(d[k]))
+        return scaler
 
 
 def bev_tensor(frames, img_size: int = None) -> torch.Tensor:
@@ -74,16 +103,20 @@ def split_by_scenario(cycles: pd.DataFrame, rows: np.ndarray, val_fraction: floa
 
 
 class CEMCycleDataset(Dataset):
-    """(target z normalised, image history) per item; draws_per_cycle items per cycle and epoch."""
+    """(target z normalised, image history[, ego state normalised]) per item; draws_per_cycle items per
+    cycle and epoch. The ego state is returned when ego_scaler is set."""
 
     def __init__(self, cache: CEMCache, rows: np.ndarray, tau: float = 0.5, density_correction: bool = True,
-                 draws_per_cycle: int = 1, normalizer=None, img_size: int = None, seed: int = 0):
+                 draws_per_cycle: int = 1, normalizer=None, img_size: int = None, seed: int = 0,
+                 ego_scaler: EgoScaler = None):
         self.cache, self.rows = cache, np.asarray(rows)
         self.tau, self.density_correction = tau, density_correction
         self.draws, self.normalizer, self.img_size, self.seed = draws_per_cycle, normalizer, img_size, seed
         self.start = cache.cycles.cand_start.to_numpy()
         self.count = cache.cycles.cand_count.to_numpy()
         self.frames = cache.cycles[[f"frame_{h}" for h in range(cache.meta["history"])]].to_numpy()
+        self.ego_scaler = ego_scaler
+        self.ego = cache.cycles[list(EGO_COLUMNS)].to_numpy(np.float64) if ego_scaler is not None else None
         self.epoch = 0
 
     def set_epoch(self, epoch: int) -> None:
@@ -114,7 +147,9 @@ class CEMCycleDataset(Dataset):
         z = self.draw(cycle, rng)
         if self.normalizer is not None:
             z = self.normalizer.transform_targets(z[None])[0]
-        return torch.from_numpy(z), self.images(cycle)
+        if self.ego is None:
+            return torch.from_numpy(z), self.images(cycle)
+        return torch.from_numpy(z), self.images(cycle), torch.from_numpy(self.ego_scaler.transform(self.ego[cycle]))
 
     def sample_targets(self, n: int, seed: int = 0) -> np.ndarray:
         """n raw targets drawn like the training items, e.g. to fit the normalizer."""

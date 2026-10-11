@@ -67,21 +67,24 @@ class CostAwareCVAE:
     -> sampling parameters z = [d, v, T] (terminal lateral offset, terminal speed, horizon).
 
     run_dir holds config.json, normalizer/ and the weights. Images are converted exactly as in
-    training (cem_dataset.bev_tensor).
+    training (cem_dataset.bev_tensor). A model trained with --ego also needs the cycle's raw ego state
+    (cem_dataset.EGO_COLUMNS order: v, a, s_d, s_dd, d, d_d, d_dd, v_des), scaled as in training.
     """
 
     HISTORY = 3
 
     def __init__(self, run_dir: str, device: torch.device, weights: str = "model_best.pth"):
         import json
-        from .cem_dataset import bev_tensor
+        from .cem_dataset import EGO_COLUMNS, EgoScaler, bev_tensor
         self._bev_tensor = bev_tensor
         self.device = device
         self.config = json.load(open(os.path.join(run_dir, "config.json")))
         self.img_size = self.config["img_size"]
+        self.uses_ego = bool(self.config.get("ego", False))
+        self.ego_scaler = EgoScaler.load(os.path.join(run_dir, "normalizer", "ego_scaler.json")) if self.uses_ego else None
         if self.config["model"] == "attn":
-            self.model = attnCVAE(hidden_dim=32, input_dim=3, img_channels=self.HISTORY,
-                                  img_size=self.img_size, latent_dim=self.config["latent_dim"])
+            self.model = attnCVAE(hidden_dim=32, input_dim=3, img_channels=self.HISTORY, img_size=self.img_size,
+                                  latent_dim=self.config["latent_dim"], ego_dim=len(EGO_COLUMNS) if self.uses_ego else 0)
         else:
             self.model = HierarchicalCVAE(hidden_dim=32, input_dim=3, img_channels=self.HISTORY,
                                           img_size=self.img_size, latent_dim=self.config["latent_dim"], attn=True)
@@ -98,7 +101,12 @@ class CostAwareCVAE:
         return self._bev_tensor(gray, self.img_size)[None].to(self.device)
 
     @torch.no_grad()
-    def generate_samples(self, frames, num_samples: int) -> np.ndarray:
-        """num_samples x 3 array of z = [d, v, T]."""
-        z = self.model.generate(c=self.condition(frames), batch=num_samples, device=self.device)
+    def generate_samples(self, frames, num_samples: int, ego=None) -> np.ndarray:
+        """num_samples x 3 array of z = [d, v, T]; ego: raw ego state, needed by models trained with --ego."""
+        kw = {}
+        if self.uses_ego:
+            if ego is None:
+                raise ValueError("this CVAE is conditioned on the ego state: pass ego")
+            kw["e"] = torch.from_numpy(self.ego_scaler.transform(np.asarray(ego, dtype=np.float64)))[None]
+        z = self.model.generate(c=self.condition(frames), batch=num_samples, device=self.device, **kw)
         return self.normalizer.inverse_transform_targets(z.cpu().numpy())
