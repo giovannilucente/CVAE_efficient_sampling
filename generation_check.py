@@ -10,6 +10,8 @@ with the cycle's target distribution (the one the CVAE is trained on, cem_datase
     mean_dist    distance of the samples' mean to the target mean (std units): does it use the scene?
     spread       std of the samples (std units, mean over d, v, T); much smaller than target_spread
                  means the CVAE collapsed to one point per scene (posterior collapse)
+With reference=True a row "target" draws the K samples from the target distribution itself (the
+cycle's candidates, resampled with their weights): what a perfect CVAE would reach.
 """
 import numpy as np
 
@@ -17,11 +19,13 @@ METRICS = ("in_bounds", "best_dist", "best_cost", "mean_dist", "spread")
 
 
 def generation_metrics(samplers: dict, cache, rows, k: int, tau: float, density_correction: bool,
-                       std: np.ndarray, seed: int = 0) -> dict:
+                       std: np.ndarray, seed: int = 0, reference: bool = False) -> dict:
     """samplers: name -> fn(frames, lo, hi, k, rng) returning (k, 3) samples [d, v, T].
     Returns {name: {metric: value}} (medians; means for in_bounds and spread) and target_spread."""
     rng = np.random.default_rng(seed)
-    res = {name: {m: [] for m in METRICS} for name in samplers}
+    ref_rng = np.random.default_rng(seed + 1)  # own stream: the other rows stay as without reference
+    names = list(samplers) + (["target"] if reference else [])
+    res = {name: {m: [] for m in METRICS} for name in names}
     target_spread = []
     for row in rows:
         r = cache.cycles.iloc[row]
@@ -35,8 +39,11 @@ def generation_metrics(samplers: dict, cache, rows, k: int, tau: float, density_
         target_spread.append(np.sqrt((w[:, None] * (cand - target_mean) ** 2).sum(0) / w.sum()).mean())
         best = cand[np.argmin(jn)]
         frames = [cache.images[r[f"frame_{h}"]] for h in range(3)]
-        for name, sample in samplers.items():
-            z = sample(frames, lo, hi, k, rng)
+        for name in names:
+            if name == "target":
+                z = cand[ref_rng.choice(n, size=k, p=w / w.sum())] * std
+            else:
+                z = samplers[name](frames, lo, hi, k, rng)
             zs = z / std
             nearest = np.argmin(((zs[:, None, :] - cand[None]) ** 2).sum(-1), axis=1)
             out = res[name]
