@@ -1,3 +1,5 @@
+import hashlib
+import io
 import os
 import numpy as np
 import torch
@@ -62,20 +64,38 @@ class CVAE_Efficient():
         return parameters.tolist()
 
 
+def read_verified(path: str) -> bytes:
+    """Bytes of a weights file, checked against SHA256SUMS in its folder when it lists the file. On a
+    mismatch the file's cached pages are dropped and it is read again: the local PC has a RAM fault that
+    corrupts the page cache (a single flipped bit in the v1 weights changed closed-loop results)."""
+    sums, name, want = os.path.join(os.path.dirname(path), "SHA256SUMS"), os.path.basename(path), None
+    if os.path.exists(sums):
+        want = next((h for h, f in (line.split(maxsplit=1) for line in open(sums)) if f.strip() == name), None)
+    for _ in range(2):
+        data = open(path, "rb").read()
+        if want is None or hashlib.sha256(data).hexdigest() == want:
+            return data
+        fd = os.open(path, os.O_RDONLY)
+        os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_DONTNEED)
+        os.close(fd)
+    raise RuntimeError(f"{path}: sha256 differs from {sums} also after reading it again from disk")
+
+
 class CostAwareCVAE:
     """Sampler of a model trained by train_cost_cvae.py: BEV history of the current planning cycle
     -> sampling parameters z = [d, v, T] (terminal lateral offset, terminal speed, horizon).
 
     run_dir holds config.json, normalizer/ and the weights. Images are converted exactly as in
-    training (cem_dataset.bev_tensor). A model trained with --ego also needs the cycle's raw ego state
-    (cem_dataset.EGO_COLUMNS order: v, a, s_d, s_dd, d, d_d, d_dd, v_des), scaled as in training.
+    training (cem_dataset.bev_tensor). A model trained with --ego also needs the cycle's full raw ego
+    state (cem_dataset.EGO_COLUMNS order: v, a, s_d, s_dd, d, d_d, d_dd, v_des); the model's own columns
+    (config ego_columns, default all) are taken from it and scaled as in training.
     """
 
     HISTORY = 3
 
     def __init__(self, run_dir: str, device: torch.device, weights: str = "model_best.pth"):
         import json
-        from .cem_dataset import EGO_COLUMNS, EgoScaler, bev_tensor
+        from .cem_dataset import EgoScaler, bev_tensor
         self._bev_tensor = bev_tensor
         self.device = device
         self.config = json.load(open(os.path.join(run_dir, "config.json")))
@@ -84,11 +104,13 @@ class CostAwareCVAE:
         self.ego_scaler = EgoScaler.load(os.path.join(run_dir, "normalizer", "ego_scaler.json")) if self.uses_ego else None
         if self.config["model"] == "attn":
             self.model = attnCVAE(hidden_dim=32, input_dim=3, img_channels=self.HISTORY, img_size=self.img_size,
-                                  latent_dim=self.config["latent_dim"], ego_dim=len(EGO_COLUMNS) if self.uses_ego else 0)
+                                  latent_dim=self.config["latent_dim"],
+                                  ego_dim=len(self.ego_scaler.columns) if self.uses_ego else 0)
         else:
             self.model = HierarchicalCVAE(hidden_dim=32, input_dim=3, img_channels=self.HISTORY,
                                           img_size=self.img_size, latent_dim=self.config["latent_dim"], attn=True)
-        self.model.load_state_dict(torch.load(os.path.join(run_dir, weights), map_location=device))
+        self.model.load_state_dict(torch.load(io.BytesIO(read_verified(os.path.join(run_dir, weights))),
+                                              map_location=device))
         self.model.to(device).eval()
         self.normalizer = Normalizer.load(os.path.join(run_dir, "normalizer"))
 
@@ -107,6 +129,6 @@ class CostAwareCVAE:
         if self.uses_ego:
             if ego is None:
                 raise ValueError("this CVAE is conditioned on the ego state: pass ego")
-            kw["e"] = torch.from_numpy(self.ego_scaler.transform(np.asarray(ego, dtype=np.float64)))[None]
+            kw["e"] = torch.from_numpy(self.ego_scaler.transform(self.ego_scaler.select(ego)))[None]
         z = self.model.generate(c=self.condition(frames), batch=num_samples, device=self.device, **kw)
         return self.normalizer.inverse_transform_targets(z.cpu().numpy())

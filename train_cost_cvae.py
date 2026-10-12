@@ -13,6 +13,8 @@ python train_cost_cvae.py --cache <cache dir> --out <run dir> [--model attn|hcva
 Outputs in <run dir>: ckpt_last.pt, model_best.pth (state dict), normalizer/, config.json, log.tsv
 """
 import argparse
+import hashlib
+import io
 import json
 import logging
 import os
@@ -46,6 +48,8 @@ def parse_args():
     p.add_argument("--latent_dim", type=int, default=64)
     p.add_argument("--ego", action="store_true",
                    help="condition also on the ego state and task (cem_dataset.EGO_COLUMNS; attn model only)")
+    p.add_argument("--ego_columns", nargs="+", choices=EGO_COLUMNS,
+                   help="only these ego inputs (implies --ego), e.g. the task only: ego_v_des ego_d ego_d_d ego_d_dd")
     # cost-aware targets
     p.add_argument("--tau", type=float, default=0.5, help="temperature of exp(-J~ / tau)")
     p.add_argument("--no_density_correction", action="store_true", help="do not divide by CEM's density q(z)")
@@ -76,7 +80,7 @@ def build_model(args):
     if args.model == "attn":
         from attn_cvae import attnCVAE, reconstruction_kld
         model = attnCVAE(hidden_dim=32, input_dim=3, img_channels=3, img_size=args.img_size, latent_dim=args.latent_dim,
-                         ego_dim=len(EGO_COLUMNS) if args.ego else 0)
+                         ego_dim=len(args.ego_columns) if args.ego else 0)
     else:
         if args.ego:
             raise SystemExit("--ego is implemented for --model attn only")
@@ -101,6 +105,9 @@ class StopRequest:
 
 def main():
     args = parse_args()
+    if args.ego_columns:
+        args.ego = True
+    args.ego_columns = list(args.ego_columns or EGO_COLUMNS) if args.ego else None
     os.makedirs(args.out, exist_ok=True)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s",
                         handlers=[logging.StreamHandler(sys.stdout), logging.FileHandler(os.path.join(args.out, "train.log"))])
@@ -113,7 +120,7 @@ def main():
     if resume:
         saved = resume["args"]
         for k in ("cache", "model", "img_size", "latent_dim", "tau", "no_density_correction", "draws_per_cycle",
-                  "drop_tail_s", "drop_failed", "batch", "seed", "limit_scenarios", "ego"):
+                  "drop_tail_s", "drop_failed", "batch", "seed", "limit_scenarios", "ego", "ego_columns"):
             if getattr(args, k) != saved.get(k):
                 raise SystemExit(f"--{k} differs from the run in {args.out} ({getattr(args, k)} vs {saved.get(k)})")
 
@@ -139,7 +146,8 @@ def main():
             ego_scaler = EgoScaler.load(ego_path)
         else:
             os.makedirs(norm_dir, exist_ok=True)
-            ego_scaler = EgoScaler().fit(cache.cycles.iloc[train_rows][list(EGO_COLUMNS)].to_numpy(np.float64))
+            ego_scaler = EgoScaler(args.ego_columns).fit(
+                cache.cycles.iloc[train_rows][list(args.ego_columns)].to_numpy(np.float64))
             ego_scaler.save(ego_path)
     common = dict(tau=args.tau, density_correction=not args.no_density_correction, img_size=args.img_size,
                   ego_scaler=ego_scaler)
@@ -254,7 +262,7 @@ def main():
         if len(gen_rows):
             summary = generation_metrics({"cvae": cvae_sampler}, val_cache, gen_rows, args.gen_check_k, args.tau,
                                          not args.no_density_correction, std, seed=args.seed,
-                                         ego_columns=EGO_COLUMNS if args.ego else None)
+                                         ego_columns=args.ego_columns if args.ego else None)
             m = summary["cvae"]
             gen = [m["in_bounds"], m["best_cost"], m["mean_dist"], m["spread"], summary["target_spread"]]
         with open(log_path, "a") as fh:
@@ -265,7 +273,11 @@ def main():
                      f"mean_dist {gen[2]:.3f}, spread {gen[3]:.3f} (target {gen[4]:.3f})")
         if val[0] < state["best_val"]:
             state["best_val"] = float(val[0])
-            torch.save(model.state_dict(), os.path.join(args.out, "model_best.pth"))
+            buf = io.BytesIO()
+            torch.save(model.state_dict(), buf)
+            open(os.path.join(args.out, "model_best.pth"), "wb").write(buf.getvalue())
+            with open(os.path.join(args.out, "SHA256SUMS"), "w") as fh:  # checked when CostAwareCVAE loads it
+                fh.write(f"{hashlib.sha256(buf.getvalue()).hexdigest()}  model_best.pth\n")
             logging.info(f"new best model (val loss {val[0]:.4f})")
         scheduler.step()
         state.update(epoch=epoch + 1, position=0, sums=[0.0, 0.0, 0.0], batches=0, beta=None)

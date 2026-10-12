@@ -27,8 +27,17 @@ EGO_COLUMNS = ("ego_v", "ego_a", "ego_s_d", "ego_s_dd", "ego_d", "ego_d_d", "ego
 
 
 class EgoScaler:
-    """Clips each ego feature to the 0.1-99.9 % range of the training cycles (e.g. one scenario starts at
-    258 m/s), then standardises it."""
+    """Clips each ego feature (columns, a subset of EGO_COLUMNS) to the 0.1-99.9 % range of the training
+    cycles (e.g. one scenario starts at 258 m/s), then standardises it."""
+
+    def __init__(self, columns=EGO_COLUMNS):
+        unknown = set(columns) - set(EGO_COLUMNS)
+        assert not unknown, f"unknown ego columns {unknown}"
+        self.columns = tuple(columns)
+
+    def select(self, full: np.ndarray) -> np.ndarray:
+        """The scaler's columns of a full ego vector (EGO_COLUMNS order)."""
+        return np.asarray(full, dtype=np.float64)[[EGO_COLUMNS.index(c) for c in self.columns]]
 
     def fit(self, x: np.ndarray) -> "EgoScaler":
         self.lo, self.hi = np.percentile(x, 0.1, axis=0), np.percentile(x, 99.9, axis=0)
@@ -40,13 +49,13 @@ class EgoScaler:
         return ((np.clip(x, self.lo, self.hi) - self.mean) / self.std).astype(np.float32)
 
     def save(self, path: str) -> None:
-        json.dump({k: getattr(self, k).tolist() for k in ("lo", "hi", "mean", "std")} | {"columns": EGO_COLUMNS},
+        json.dump({k: getattr(self, k).tolist() for k in ("lo", "hi", "mean", "std")} | {"columns": self.columns},
                   open(path, "w"), indent=1)
 
     @classmethod
     def load(cls, path: str) -> "EgoScaler":
-        d, scaler = json.load(open(path)), cls()
-        assert tuple(d["columns"]) == EGO_COLUMNS, f"{path}: other ego columns"
+        d = json.load(open(path))
+        scaler = cls(d["columns"])
         for k in ("lo", "hi", "mean", "std"):
             setattr(scaler, k, np.array(d[k]))
         return scaler
@@ -116,7 +125,7 @@ class CEMCycleDataset(Dataset):
         self.count = cache.cycles.cand_count.to_numpy()
         self.frames = cache.cycles[[f"frame_{h}" for h in range(cache.meta["history"])]].to_numpy()
         self.ego_scaler = ego_scaler
-        self.ego = cache.cycles[list(EGO_COLUMNS)].to_numpy(np.float64) if ego_scaler is not None else None
+        self.ego = cache.cycles[list(ego_scaler.columns)].to_numpy(np.float64) if ego_scaler is not None else None
         self.epoch = 0
 
     def set_epoch(self, epoch: int) -> None:
