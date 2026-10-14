@@ -88,24 +88,29 @@ class CostAwareCVAE:
     run_dir holds config.json, normalizer/ and the weights. Images are converted exactly as in
     training (cem_dataset.bev_tensor). A model trained with --ego also needs the cycle's full raw ego
     state (cem_dataset.EGO_COLUMNS order: v, a, s_d, s_dd, d, d_d, d_dd, v_des); the model's own columns
-    (config ego_columns, default all) are taken from it and scaled as in training.
+    (config ego_columns, default all) are taken from it and scaled as in training. A model trained with
+    --route needs the reference path ahead in the ego frame of the cycle (planners.common.utils
+    reference_ahead_local, as conditions.parquet of the collection); it is converted with
+    cem_dataset.route_features, as in training.
     """
 
     HISTORY = 3
 
     def __init__(self, run_dir: str, device: torch.device, weights: str = "model_best.pth"):
         import json
-        from .cem_dataset import EgoScaler, bev_tensor
-        self._bev_tensor = bev_tensor
+        from .cem_dataset import ROUTE_POINTS, EgoScaler, bev_tensor, route_features
+        self._bev_tensor, self._route_features = bev_tensor, route_features
         self.device = device
         self.config = json.load(open(os.path.join(run_dir, "config.json")))
         self.img_size = self.config["img_size"]
         self.uses_ego = bool(self.config.get("ego", False))
         self.ego_scaler = EgoScaler.load(os.path.join(run_dir, "normalizer", "ego_scaler.json")) if self.uses_ego else None
+        self.uses_route = bool(self.config.get("route", False))
         if self.config["model"] == "attn":
             self.model = attnCVAE(hidden_dim=32, input_dim=3, img_channels=self.HISTORY, img_size=self.img_size,
                                   latent_dim=self.config["latent_dim"],
-                                  ego_dim=len(self.ego_scaler.columns) if self.uses_ego else 0)
+                                  ego_dim=len(self.ego_scaler.columns) if self.uses_ego else 0,
+                                  route_points=ROUTE_POINTS if self.uses_route else 0)
         else:
             self.model = HierarchicalCVAE(hidden_dim=32, input_dim=3, img_channels=self.HISTORY,
                                           img_size=self.img_size, latent_dim=self.config["latent_dim"], attn=True)
@@ -123,12 +128,17 @@ class CostAwareCVAE:
         return self._bev_tensor(gray, self.img_size)[None].to(self.device)
 
     @torch.no_grad()
-    def generate_samples(self, frames, num_samples: int, ego=None) -> np.ndarray:
-        """num_samples x 3 array of z = [d, v, T]; ego: raw ego state, needed by models trained with --ego."""
+    def generate_samples(self, frames, num_samples: int, ego=None, ref_path=None) -> np.ndarray:
+        """num_samples x 3 array of z = [d, v, T]; ego: raw ego state, needed by models trained with --ego;
+        ref_path: reference path ahead (n, 2) in the ego frame, needed by models trained with --route."""
         kw = {}
         if self.uses_ego:
             if ego is None:
                 raise ValueError("this CVAE is conditioned on the ego state: pass ego")
             kw["e"] = torch.from_numpy(self.ego_scaler.transform(self.ego_scaler.select(ego)))[None]
+        if self.uses_route:
+            if ref_path is None:
+                raise ValueError("this CVAE is conditioned on the route: pass ref_path")
+            kw["r"] = torch.from_numpy(self._route_features(ref_path))[None]
         z = self.model.generate(c=self.condition(frames), batch=num_samples, device=self.device, **kw)
         return self.normalizer.inverse_transform_targets(z.cpu().numpy())

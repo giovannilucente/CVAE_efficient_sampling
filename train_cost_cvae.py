@@ -28,8 +28,8 @@ from torch.utils.data import DataLoader
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from beta_annealer import BetaAnnealer  # noqa: E402
-from cem_dataset import (EGO_COLUMNS, CEMCache, CEMCycleDataset, EgoScaler, ResumableSampler, bev_tensor,  # noqa: E402
-                         select_cycles, split_by_scenario)
+from cem_dataset import (EGO_COLUMNS, ROUTE_POINTS, CEMCache, CEMCycleConcat, CEMCycleDataset, EgoScaler,  # noqa: E402
+                         ResumableSampler, bev_tensor, route_features, select_cycles, split_by_scenario)
 from generation_check import generation_metrics  # noqa: E402
 from normalizer import Normalizer  # noqa: E402
 
@@ -39,7 +39,9 @@ RESUME_EXIT_CODE = 3  # stopped before the end (time limit / signal); slurm_trai
 
 def parse_args():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--cache", required=True, help="training cache (cem_cache.py)")
+    p.add_argument("--cache", required=True, nargs="+",
+                   help="training cache(s) (cem_cache.py); several are trained on together, e.g. the CEM data "
+                        "and DAgger rounds (then --val_cache is required)")
     p.add_argument("--val_cache", help="validation cache; default: --val_fraction of the training scenarios")
     p.add_argument("--val_fraction", type=float, default=0.05)
     p.add_argument("--out", required=True, help="run directory (resumed if it holds ckpt_last.pt)")
@@ -50,6 +52,9 @@ def parse_args():
                    help="condition also on the ego state and task (cem_dataset.EGO_COLUMNS; attn model only)")
     p.add_argument("--ego_columns", nargs="+", choices=EGO_COLUMNS,
                    help="only these ego inputs (implies --ego), e.g. the task only: ego_v_des ego_d ego_d_d ego_d_dd")
+    p.add_argument("--route", action="store_true",
+                   help="condition also on the planned route (reference path ahead, cem_dataset.route_features; "
+                        "needs route.bin in the caches; attn model only)")
     # cost-aware targets
     p.add_argument("--tau", type=float, default=0.5, help="temperature of exp(-J~ / tau)")
     p.add_argument("--no_density_correction", action="store_true", help="do not divide by CEM's density q(z)")
@@ -80,10 +85,11 @@ def build_model(args):
     if args.model == "attn":
         from attn_cvae import attnCVAE, reconstruction_kld
         model = attnCVAE(hidden_dim=32, input_dim=3, img_channels=3, img_size=args.img_size, latent_dim=args.latent_dim,
-                         ego_dim=len(args.ego_columns) if args.ego else 0)
+                         ego_dim=len(args.ego_columns) if args.ego else 0,
+                         route_points=ROUTE_POINTS if args.route else 0)
     else:
-        if args.ego:
-            raise SystemExit("--ego is implemented for --model attn only")
+        if args.ego or args.route:
+            raise SystemExit("--ego / --route are implemented for --model attn only")
         from hcvae import HierarchicalCVAE, reconstruction_kld
         model = HierarchicalCVAE(hidden_dim=32, input_dim=3, img_channels=3, img_size=args.img_size,
                                  latent_dim=args.latent_dim, attn=True)
@@ -105,6 +111,8 @@ class StopRequest:
 
 def main():
     args = parse_args()
+    if len(args.cache) > 1 and not args.val_cache:
+        raise SystemExit("several --cache need a --val_cache")
     if args.ego_columns:
         args.ego = True
     args.ego_columns = list(args.ego_columns or EGO_COLUMNS) if args.ego else None
@@ -119,24 +127,30 @@ def main():
     resume = torch.load(ckpt_path, map_location="cpu", weights_only=False) if os.path.exists(ckpt_path) else None
     if resume:
         saved = resume["args"]
+        if isinstance(saved.get("cache"), str):  # runs before several caches were possible
+            saved["cache"] = [saved["cache"]]
         for k in ("cache", "model", "img_size", "latent_dim", "tau", "no_density_correction", "draws_per_cycle",
-                  "drop_tail_s", "drop_failed", "batch", "seed", "limit_scenarios", "ego", "ego_columns"):
-            if getattr(args, k) != saved.get(k):
+                  "drop_tail_s", "drop_failed", "batch", "seed", "limit_scenarios", "ego", "ego_columns", "route"):
+            if getattr(args, k) != saved.get(k, False if k == "route" else None):
                 raise SystemExit(f"--{k} differs from the run in {args.out} ({getattr(args, k)} vs {saved.get(k)})")
 
     # data
-    cache = CEMCache(args.cache)
-    rows = select_cycles(cache.cycles, args.drop_tail_s, keep_failed=not args.drop_failed)
-    if args.limit_scenarios:
-        keep = set(cache.cycles.scenario.drop_duplicates().iloc[:args.limit_scenarios])
-        rows = rows[cache.cycles.scenario.iloc[rows].isin(keep).to_numpy()]
+    caches, train_rows_all = [CEMCache(c) for c in args.cache], []
+    for cache in caches:  # DAgger caches keep the cycles before a (learner's) failure, see select_cycles
+        rows = select_cycles(cache.cycles, 0.0 if cache.dagger else args.drop_tail_s,
+                             keep_failed=cache.dagger or not args.drop_failed)
+        if args.limit_scenarios:
+            keep = set(cache.cycles.scenario.drop_duplicates().iloc[:args.limit_scenarios])
+            rows = rows[cache.cycles.scenario.iloc[rows].isin(keep).to_numpy()]
+        train_rows_all.append(rows)
+    cache = caches[0]
     if args.val_cache:
-        train_rows = rows
         val_cache = CEMCache(args.val_cache)
         val_rows = select_cycles(val_cache.cycles, args.drop_tail_s, keep_failed=not args.drop_failed)
     else:
-        train_rows, val_rows = split_by_scenario(cache.cycles, rows, args.val_fraction, args.seed)
+        train_rows_all[0], val_rows = split_by_scenario(cache.cycles, train_rows_all[0], args.val_fraction, args.seed)
         val_cache = cache
+    train_rows = np.concatenate(train_rows_all)
     val_rows = np.random.default_rng(args.seed).permutation(val_rows)[:args.val_max_cycles]
     norm_dir = os.path.join(args.out, "normalizer")
     ego_scaler = None
@@ -146,12 +160,15 @@ def main():
             ego_scaler = EgoScaler.load(ego_path)
         else:
             os.makedirs(norm_dir, exist_ok=True)
-            ego_scaler = EgoScaler(args.ego_columns).fit(
-                cache.cycles.iloc[train_rows][list(args.ego_columns)].to_numpy(np.float64))
+            ego_scaler = EgoScaler(args.ego_columns).fit(np.concatenate(
+                [c.cycles.iloc[r][list(args.ego_columns)].to_numpy(np.float64) for c, r in zip(caches, train_rows_all)]))
             ego_scaler.save(ego_path)
     common = dict(tau=args.tau, density_correction=not args.no_density_correction, img_size=args.img_size,
-                  ego_scaler=ego_scaler)
-    train_set = CEMCycleDataset(cache, train_rows, draws_per_cycle=args.draws_per_cycle, seed=args.seed, **common)
+                  ego_scaler=ego_scaler, route=args.route)
+    # cache k > 0 draws with its own seed; a single cache trains exactly as before
+    parts = [CEMCycleDataset(c, r, draws_per_cycle=args.draws_per_cycle, seed=args.seed + 1000 * k, **common)
+             for k, (c, r) in enumerate(zip(caches, train_rows_all))]
+    train_set = parts[0] if len(parts) == 1 else CEMCycleConcat(parts)
     val_set = CEMCycleDataset(val_cache, val_rows, seed=args.seed + 1, **common)
 
     if resume:
@@ -163,7 +180,9 @@ def main():
         ess = train_set.effective_sample_size()
         json.dump({**vars(args), "z_order": ["d", "v", "T"], "train_cycles": len(train_rows), "val_cycles": len(val_rows),
                    "ess_median": float(np.median(ess)), "ess_p10": float(np.percentile(ess, 10)),
-                   "cache_meta": {k: v for k, v in cache.meta.items() if k != "dataset_info"}},
+                   "train_cycles_per_cache": [len(r) for r in train_rows_all],
+                   "dagger_caches": [c.dagger for c in caches],
+                   "cache_meta": [{k: v for k, v in c.meta.items() if k != "dataset_info"} for c in caches]},
                   open(os.path.join(args.out, "config.json"), "w"), indent=1)
         logging.info(f"{len(train_rows)} train / {len(val_rows)} val cycles; effective candidates per cycle "
                      f"(ESS) median {np.median(ess):.1f}, 10th percentile {np.percentile(ess, 10):.1f}")
@@ -202,8 +221,10 @@ def main():
     gen_rows = val_rows[:args.gen_check_cycles]
 
     @torch.no_grad()
-    def cvae_sampler(frames, lo, hi, k, rng, ego=None):
+    def cvae_sampler(frames, lo, hi, k, rng, ego=None, ref_path=None):
         kw = {"e": torch.from_numpy(ego_scaler.transform(ego))[None]} if ego_scaler is not None else {}
+        if args.route:
+            kw["r"] = torch.from_numpy(route_features(ref_path))[None]
         z = model.generate(bev_tensor(frames, args.img_size)[None].to(device), batch=k, device=device, **kw)
         return normalizer.inverse_transform_targets(z.cpu().numpy())
     last_ckpt = time.time()
@@ -216,10 +237,10 @@ def main():
         sampler.set_epoch(epoch, start=state["position"])
         loader = DataLoader(train_set, sampler=sampler, drop_last=True, **loader_kw)
         model.train()
-        for x, imgs, *ego in loader:  # ego: [] or [normalised ego state]
+        for x, imgs, cond in loader:  # cond: the further inputs of the model by name ("e" ego, "r" route)
             x, imgs = x.to(device, non_blocking=True), imgs.to(device, non_blocking=True)
-            e = ego[0].to(device, non_blocking=True) if ego else None
-            y_pred, kl_values = model(x, imgs, e) if e is not None else model(x, imgs)
+            cond = {k: v.to(device, non_blocking=True) for k, v in cond.items()}
+            y_pred, kl_values = model(x, imgs, **cond)
             loss, rec, kl = loss_fn(y_pred, x, kl_values, beta=state["beta"])
             if not torch.isfinite(loss):  # e.g. a value corrupted while reading the cache: never step on it
                 logging.warning(f"epoch {epoch + 1} item {state['position']}: non-finite loss, batch skipped")
@@ -249,10 +270,8 @@ def main():
         model.eval()
         val = np.zeros(3)
         with torch.no_grad():
-            for x, imgs, *ego in val_loader:
-                e = ego[0].to(device) if ego else None
-                y_pred, kl_values = model(x.to(device), imgs.to(device), e) if e is not None else \
-                    model(x.to(device), imgs.to(device))
+            for x, imgs, cond in val_loader:
+                y_pred, kl_values = model(x.to(device), imgs.to(device), **{k: v.to(device) for k, v in cond.items()})
                 val += [v.item() for v in loss_fn(y_pred, x.to(device), kl_values, beta=1.0)]
         val /= max(len(val_loader), 1)
         train = [v / max(state["batches"], 1) for v in state["sums"]]
@@ -262,7 +281,7 @@ def main():
         if len(gen_rows):
             summary = generation_metrics({"cvae": cvae_sampler}, val_cache, gen_rows, args.gen_check_k, args.tau,
                                          not args.no_density_correction, std, seed=args.seed,
-                                         ego_columns=args.ego_columns if args.ego else None)
+                                         ego_columns=args.ego_columns if args.ego else None, route=args.route)
             m = summary["cvae"]
             gen = [m["in_bounds"], m["best_cost"], m["mean_dist"], m["spread"], summary["target_spread"]]
         with open(log_path, "a") as fh:

@@ -100,8 +100,13 @@ cd <cache dir> && sha256sum *.bin cycles.parquet meta.json > sha256sums.txt
 
 The cache holds flat memory-mapped arrays (about 47 GB for the 6683 Train scenarios, about 1 min
 to build):
-- per planning cycle: the scenario outcome, the search space and the 3-frame image history;
+- per planning cycle: the scenario outcome, the search space, the ego state and the 3-frame image
+  history, and the reference path ahead (`route_xy.bin`, for `--route`; collections with
+  `conditions.parquet`, v2 on);
 - per feasible candidate: z, J~ and log q.
+
+`python cem_cache.py --data <collection> --out <existing cache> --add_route` adds only the route files
+to a cache built before (seconds).
 
 Scenarios whose files cannot be read are skipped and listed in `meta.json` under `skipped`. Only
 the cache is needed for training, not the raw collection.
@@ -201,6 +206,12 @@ cycles, 2 GB GPU memory. An A40 or A100 has far more than needed.
 - `--drop_tail_s` / `--drop_failed` (cycles of failed scenarios: by default the last 2.5 s before
   a non-rear-end failure are dropped);
 - `--val_fraction` or `--val_cache`;
+- `--route`: also condition on the planned route. The reference path ahead (ego frame, from the
+  nearest reference point) is resampled every 2 m, 20 points, as deltas (`cem_dataset.route_features`,
+  as the world-model CVAE CVAE_trajectory_planning). One token per point is appended to the image
+  tokens, so the encoder, prior and decoder attend to it. The BEV images do not show the route, so
+  at intersections the image-only model cannot see which branch is planned;
+- `--ego` / `--ego_columns`: also condition on the ego state (negative result, see CLAUDE.md);
 - `--beta_end`, `--epochs`, `--lr`, `--batch`.
 
 ## 5. Inference interface
@@ -216,6 +227,11 @@ z = sampler.generate_samples(frames, num_samples=32)   # numpy (32, 3): [d, v, T
 history at the start of a scenario is padded with the first frame (t = 1 -> frames [0, 0, 1]).
 The image is encoded once for all samples. The planner should clip the samples to its search
 space.
+
+A model trained with `--route` (`sampler.uses_route`) also needs the reference path ahead in the
+ego frame of the cycle, computed as in the collection
+(`planners.common.utils.reference_ahead_local(ref_xy, ego_pos, ego_yaw, ScenarioDrawer.VIEW_SIZE_DEFAULT / 2)`):
+`sampler.generate_samples(frames, 32, ref_path=path)`. CVAE-FOP does this itself.
 
 The old `CVAE_Efficient` class is unchanged. It serves the released weights, with the [t, d, v]
 order and fixed statistics.

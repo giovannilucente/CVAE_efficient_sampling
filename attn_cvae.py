@@ -78,6 +78,19 @@ class VectorTokenizer(nn.Module):
         return x                                    # (B, seq_len, hidden_dim)
 
 
+class PointTokenizer(nn.Module):
+    """One token per point of a sequence (B, L, input_dim): shared MLP + learned position embedding, the
+    navigation tokenizer of the world-model CVAE (CVAE_trajectory_planning, cond_n)."""
+
+    def __init__(self, input_dim=2, hidden_dim=64, seq_len=20):
+        super().__init__()
+        self.mlp = nn.Sequential(nn.Linear(input_dim, hidden_dim), nn.ReLU())
+        self.pos_embed = nn.Parameter(torch.randn(1, seq_len, hidden_dim))
+
+    def forward(self, x):
+        return self.mlp(x) + self.pos_embed  # (B, L, hidden_dim)
+
+
 class TransformerBlock(nn.Module):
     def __init__(self, dim, num_heads=8, mlp_ratio=4.0):
         super().__init__()
@@ -177,11 +190,13 @@ class DecoderLevel(nn.Module):
 class attnCVAE(nn.Module):
     """ego_dim > 0 adds a vector condition (ego state and task): ego_tokens tokens of a VectorTokenizer are
     appended to the image tokens, so the encoder, prior and decoder attend to both (Ichter et al. 2018
-    condition the sampling distribution on start state, goal and obstacles). ego_dim = 0 is the
-    image-only model of CVAE v1."""
+    condition the sampling distribution on start state, goal and obstacles). route_points > 0 adds the
+    planned route (cem_dataset.route_features, (B, route_points, 2)): one token per point, appended to the
+    condition tokens in the same way; the world-model CVAE (CVAE_trajectory_planning) feeds the same
+    route tokens through FiLM instead. ego_dim = route_points = 0 is the image-only model of CVAE v1."""
 
     def __init__(self, hidden_dim=32, input_dim=3, img_channels=3,  img_size=256, latent_dim=64, ego_dim=0,
-                 ego_tokens=8):
+                 ego_tokens=8, route_points=0):
         super().__init__()
         self.hidden_dim = hidden_dim
         self.latent_dim = latent_dim
@@ -193,6 +208,9 @@ class attnCVAE(nn.Module):
 
         # Ego state tokenizer (optional vector condition)
         self.ego = VectorTokenizer(input_dim=ego_dim, hidden_dim=hidden_dim, seq_len=ego_tokens) if ego_dim else None
+
+        # Route tokenizer (optional: the reference path ahead)
+        self.route = PointTokenizer(input_dim=2, hidden_dim=hidden_dim, seq_len=route_points) if route_points else None
 
         # Input tokenizer
         self.input_tokenizer = VectorTokenizer(input_dim=input_dim, hidden_dim=hidden_dim, seq_len=self.seq_len)
@@ -217,16 +235,18 @@ class attnCVAE(nn.Module):
         eps = torch.randn_like(std)
         return mu + eps * std
 
-    def condition(self, c, e=None):
-        """Condition tokens: image tokens, followed by the ego tokens if the model has an ego input."""
+    def condition(self, c, e=None, r=None):
+        """Condition tokens: image tokens, followed by the ego and route tokens if the model has these inputs."""
         c = self.cond(c)
         if self.ego is not None:
             c = torch.cat([c, self.ego(e)], dim=1)
+        if self.route is not None:
+            c = torch.cat([c, self.route(r)], dim=1)
         return c
 
-    def forward(self, x, c, e=None):
+    def forward(self, x, c, e=None, r=None):
 
-        c = self.condition(c, e)
+        c = self.condition(c, e, r)
         x = self.input_tokenizer(x)
 
         h = self.enc(x, c)
@@ -242,9 +262,10 @@ class attnCVAE(nn.Module):
         return out, [kl, kl, kl, kl]
 
     #@torch.no_grad()
-    def generate(self, c, batch=1, device="cpu", e=None):
+    def generate(self, c, batch=1, device="cpu", e=None, r=None):
         e = None if e is None else e.to(device)
-        c = self.condition(c.to(device), e).expand(batch, -1, -1)  # encode the condition once for all samples
+        r = None if r is None else r.to(device)
+        c = self.condition(c.to(device), e, r).expand(batch, -1, -1)  # encode the condition once for all samples
         mu, logvar = self.pri(c)
         z = self.reparameterize(mu, logvar) 
         q = self.lat(z)

@@ -36,20 +36,21 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     sampler = CostAwareCVAE(args.run, device)
     cfg = sampler.config
-    cache = CEMCache(args.cache or cfg["val_cache"] or cfg["cache"])
+    train_cache = cfg["cache"] if isinstance(cfg["cache"], str) else cfg["cache"][0]
+    cache = CEMCache(args.cache or cfg["val_cache"] or train_cache)
     rows = select_cycles(cache.cycles, cfg["drop_tail_s"], keep_failed=not cfg["drop_failed"])
     if not args.cache and not cfg["val_cache"]:
         _, rows = split_by_scenario(cache.cycles, rows, cfg["val_fraction"], cfg["seed"])
     rows = np.random.default_rng(args.seed).permutation(rows)[:args.cycles]
     mean, std = sampler.normalizer.target_scaler.mean_, sampler.normalizer.target_scaler.scale_
     samplers = {
-        "cvae": lambda frames, lo, hi, k, rng, ego: sampler.generate_samples(frames, k, ego=ego),
-        "uniform": lambda frames, lo, hi, k, rng, ego: lo + (hi - lo) * rng.random((k, 3)),
-        "marginal": lambda frames, lo, hi, k, rng, ego: mean + std * rng.standard_normal((k, 3)),
+        "cvae": lambda frames, lo, hi, k, rng, **inputs: sampler.generate_samples(frames, k, **inputs),
+        "uniform": lambda frames, lo, hi, k, rng, **inputs: lo + (hi - lo) * rng.random((k, 3)),
+        "marginal": lambda frames, lo, hi, k, rng, **inputs: mean + std * rng.standard_normal((k, 3)),
     }
     summary = generation_metrics(samplers, cache, rows, args.k, cfg["tau"], not cfg["no_density_correction"],
                                  std, seed=args.seed, reference=True,
-                                 ego_columns=EGO_COLUMNS if sampler.uses_ego else None)
+                                 ego_columns=EGO_COLUMNS if sampler.uses_ego else None, route=sampler.uses_route)
 
     print(f"{len(rows)} held-out cycles of {cache.dir}, K = {args.k} samples each (run {args.run})")
     print(f"{'sampler':10s} {'in_bounds':>10s} {'best_dist':>10s} {'best_cost@K':>12s} {'mean_dist':>10s} {'spread':>8s}")
