@@ -61,6 +61,9 @@ def parse_args():
     p.add_argument("--draws_per_cycle", type=int, default=1, help="items per planning cycle and epoch")
     p.add_argument("--drop_tail_s", type=float, default=2.5, help="dropped seconds before a non-rear-end failure")
     p.add_argument("--drop_failed", action="store_true", help="drop non-rear-end failed scenarios entirely")
+    p.add_argument("--success_only", action="store_true",
+                   help="train and validate only on the scenarios the CEM completed (no rear-end or other failure; "
+                        "data/10k/*_cem_success); not applied to DAgger caches")
     # optimisation
     p.add_argument("--epochs", type=int, default=20)
     p.add_argument("--batch", type=int, default=64)
@@ -130,15 +133,17 @@ def main():
         if isinstance(saved.get("cache"), str):  # runs before several caches were possible
             saved["cache"] = [saved["cache"]]
         for k in ("cache", "model", "img_size", "latent_dim", "tau", "no_density_correction", "draws_per_cycle",
-                  "drop_tail_s", "drop_failed", "batch", "seed", "limit_scenarios", "ego", "ego_columns", "route"):
-            if getattr(args, k) != saved.get(k, False if k == "route" else None):
+                  "drop_tail_s", "drop_failed", "batch", "seed", "limit_scenarios", "ego", "ego_columns", "route",
+                  "success_only"):
+            if getattr(args, k) != saved.get(k, False if k in ("route", "success_only") else None):
                 raise SystemExit(f"--{k} differs from the run in {args.out} ({getattr(args, k)} vs {saved.get(k)})")
 
     # data
     caches, train_rows_all = [CEMCache(c) for c in args.cache], []
     for cache in caches:  # DAgger caches keep the cycles before a (learner's) failure, see select_cycles
         rows = select_cycles(cache.cycles, 0.0 if cache.dagger else args.drop_tail_s,
-                             keep_failed=cache.dagger or not args.drop_failed)
+                             keep_failed=cache.dagger or not args.drop_failed,
+                             success_only=args.success_only and not cache.dagger)
         if args.limit_scenarios:
             keep = set(cache.cycles.scenario.drop_duplicates().iloc[:args.limit_scenarios])
             rows = rows[cache.cycles.scenario.iloc[rows].isin(keep).to_numpy()]
@@ -146,7 +151,8 @@ def main():
     cache = caches[0]
     if args.val_cache:
         val_cache = CEMCache(args.val_cache)
-        val_rows = select_cycles(val_cache.cycles, args.drop_tail_s, keep_failed=not args.drop_failed)
+        val_rows = select_cycles(val_cache.cycles, args.drop_tail_s, keep_failed=not args.drop_failed,
+                                 success_only=args.success_only)
     else:
         train_rows_all[0], val_rows = split_by_scenario(cache.cycles, train_rows_all[0], args.val_fraction, args.seed)
         val_cache = cache

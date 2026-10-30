@@ -134,7 +134,8 @@ class CEMCache:
         return np.asarray(self.route_xy[self.route_offsets[cycle]:self.route_offsets[cycle + 1]])
 
 
-def select_cycles(cycles: pd.DataFrame, drop_tail_s: float = 2.5, keep_failed: bool = True) -> np.ndarray:
+def select_cycles(cycles: pd.DataFrame, drop_tail_s: float = 2.5, keep_failed: bool = True,
+                  success_only: bool = False) -> np.ndarray:
     """Row indices of the cycles to learn from.
 
     Cycles without a feasible candidate (e.g. the failing cycle) carry nothing to learn. Rear-end
@@ -142,9 +143,12 @@ def select_cycles(cycles: pd.DataFrame, drop_tail_s: float = 2.5, keep_failed: b
     scenario the last drop_tail_s seconds before the failure led into the dead end and are dropped;
     keep_failed=False drops these scenarios entirely. Both apply to data where the CEM drove; in DAgger
     data (CEMCache.dagger) the learner failed and the expert's labels in these states are kept: pass
-    drop_tail_s=0, keep_failed=True.
+    drop_tail_s=0, keep_failed=True. success_only keeps only the scenarios the CEM completed (goal, map
+    end or time limit; no rear-end or other failure), as data/10k/*_cem_success.
     """
     ok = cycles.cand_count > 0
+    if success_only:
+        return np.flatnonzero((ok & cycles.scenario_success).to_numpy())
     failed = ~cycles.scenario_success & ~cycles.rear_end_failure
     if keep_failed:
         tail = failed & (cycles.time_step > cycles.failed_at_time_step - round(drop_tail_s / DT))

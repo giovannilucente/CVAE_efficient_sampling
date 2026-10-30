@@ -38,7 +38,8 @@ def main():
     cfg = sampler.config
     train_cache = cfg["cache"] if isinstance(cfg["cache"], str) else cfg["cache"][0]
     cache = CEMCache(args.cache or cfg["val_cache"] or train_cache)
-    rows = select_cycles(cache.cycles, cfg["drop_tail_s"], keep_failed=not cfg["drop_failed"])
+    rows = select_cycles(cache.cycles, cfg["drop_tail_s"], keep_failed=not cfg["drop_failed"],
+                         success_only=cfg.get("success_only", False))
     if not args.cache and not cfg["val_cache"]:
         _, rows = split_by_scenario(cache.cycles, rows, cfg["val_fraction"], cfg["seed"])
     rows = np.random.default_rng(args.seed).permutation(rows)[:args.cycles]
